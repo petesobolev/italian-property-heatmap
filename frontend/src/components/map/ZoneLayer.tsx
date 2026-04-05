@@ -22,8 +22,8 @@ interface ZoneLayerProps {
 
 // Minimum zoom level to show zones
 const ZONE_VISIBLE_ZOOM = 11;
-// Zoom level to show permanent zone labels
-const ZONE_LABEL_ZOOM = 13;
+// Zoom level to show permanent zone labels (same as visible zoom)
+const ZONE_LABEL_ZOOM = 11;
 
 // Color palette for zones based on zone type
 const ZONE_TYPE_COLORS: Record<string, string> = {
