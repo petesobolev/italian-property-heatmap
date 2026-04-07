@@ -494,7 +494,7 @@ export function MapInner() {
         <TileLayer attribution={DARK_ATTRIBUTION} url={DARK_TILES} />
         {geojson && (
           <GeoJSON
-            key={`${filters.metric}-${filters.propertySegment}-${filters.showFlatTaxEligible}`}
+            key={`${filters.metric}-${filters.propertySegment}-${filters.showFlatTaxEligible}-${filters.region || 'all'}-${filters.province || 'all'}`}
             data={geojson}
             style={style}
             onEachFeature={onEachFeature}
