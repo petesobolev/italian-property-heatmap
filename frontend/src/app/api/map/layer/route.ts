@@ -9,6 +9,43 @@ export async function GET(request: Request) {
 
   const supabase = createSupabaseServerClient();
 
+  // Handle vehicle arson metric separately
+  if (metric === "vehicle_arson_rate") {
+    const { data: arsonData, error: arsonError } = await supabase
+      .schema("mart")
+      .from("vehicle_arson_municipality_year")
+      .select("municipality_id, rate_per_100k_residents, confidence_grade")
+      .eq("year", 2023) // Latest year
+      .order("rate_per_100k_residents", { ascending: false });
+
+    if (arsonError) {
+      return NextResponse.json(
+        {
+          metric,
+          horizonMonths,
+          segment,
+          asOf: new Date().toISOString(),
+          error: arsonError.message,
+          features: [],
+        },
+        { status: 500 }
+      );
+    }
+
+    return NextResponse.json({
+      metric,
+      horizonMonths,
+      segment,
+      asOf: "2023",
+      features: (arsonData ?? []).map((r) => ({
+        municipalityId: r.municipality_id,
+        value: r.rate_per_100k_residents,
+        confidenceGrade: r.confidence_grade,
+      })),
+    });
+  }
+
+  // Standard metrics from forecasts table
   // Latest published snapshot approach (MVP): pick latest forecast_date for requested horizon+segment.
   // Later we can switch this to a dedicated publish view with approvals.
   const { data: latest, error: latestError } = await supabase
@@ -31,7 +68,7 @@ export async function GET(request: Request) {
         error: latestError.message,
         features: [],
       },
-      { status: 500 },
+      { status: 500 }
     );
   }
 
@@ -51,7 +88,7 @@ export async function GET(request: Request) {
     .schema("model")
     .from("forecasts_municipality")
     .select(
-      "municipality_id,value_mid_eur_sqm,forecast_appreciation_pct,forecast_gross_yield_pct,opportunity_score,confidence_score",
+      "municipality_id,value_mid_eur_sqm,forecast_appreciation_pct,forecast_gross_yield_pct,opportunity_score,confidence_score"
     )
     .eq("forecast_date", latestDate)
     .eq("horizon_months", horizonMonths)
@@ -68,7 +105,7 @@ export async function GET(request: Request) {
         error: rowsError.message,
         features: [],
       },
-      { status: 500 },
+      { status: 500 }
     );
   }
 
@@ -100,4 +137,3 @@ export async function GET(request: Request) {
     })),
   });
 }
-

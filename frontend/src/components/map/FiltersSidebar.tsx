@@ -7,7 +7,8 @@ export type MetricType =
   | "forecast_appreciation_pct"
   | "forecast_gross_yield_pct"
   | "opportunity_score"
-  | "confidence_score";
+  | "confidence_score"
+  | "vehicle_arson_rate";
 
 export interface FiltersState {
   metric: MetricType;
@@ -25,9 +26,10 @@ interface FiltersSidebarProps {
   provinces?: { code: string; name: string; regionCode: string }[];
   isCollapsed?: boolean;
   onToggleCollapse?: () => void;
+  showHiddenMetrics?: boolean;
 }
 
-const METRICS: { value: MetricType; label: string; icon: string; description: string }[] = [
+const METRICS: { value: MetricType; label: string; icon: string; description: string; hidden?: boolean }[] = [
   {
     value: "value_mid_eur_sqm",
     label: "Property Value",
@@ -58,6 +60,13 @@ const METRICS: { value: MetricType; label: string; icon: string; description: st
     icon: "●",
     description: "Data reliability",
   },
+  {
+    value: "vehicle_arson_rate",
+    label: "Vehicle Arson",
+    icon: "🔥",
+    description: "Incidents per 100k",
+    hidden: true,
+  },
 ];
 
 const SEGMENTS = [
@@ -73,8 +82,12 @@ export function FiltersSidebar({
   provinces = [],
   isCollapsed = false,
   onToggleCollapse,
+  showHiddenMetrics = false,
 }: FiltersSidebarProps) {
   const [isAnimating, setIsAnimating] = useState(false);
+
+  // Filter metrics based on whether hidden metrics should be shown
+  const visibleMetrics = METRICS.filter((m) => !m.hidden || showHiddenMetrics);
 
   const handleMetricChange = useCallback(
     (metric: MetricType) => {
@@ -178,7 +191,7 @@ export function FiltersSidebar({
             <span className="filters-section__label-ornament" />
           </label>
           <div className="metric-grid">
-            {METRICS.map((m, idx) => (
+            {visibleMetrics.map((m, idx) => (
               <button
                 key={m.value}
                 onClick={() => handleMetricChange(m.value)}

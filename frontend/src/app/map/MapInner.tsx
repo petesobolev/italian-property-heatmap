@@ -2,6 +2,7 @@
 
 import "leaflet/dist/leaflet.css";
 import { useEffect, useMemo, useState, useCallback } from "react";
+import { useSearchParams } from "next/navigation";
 import type { GeoJsonObject, FeatureCollection, Feature } from "geojson";
 import { GeoJSON, MapContainer, TileLayer, useMap, ZoomControl } from "react-leaflet";
 import type { Layer, LeafletMouseEvent } from "leaflet";
@@ -82,6 +83,16 @@ const COLOR_SCALES: Record<MetricType, { stops: number[][]; noData: string }> = 
     ],
     noData: "#2a2d35",
   },
+  vehicle_arson_rate: {
+    stops: [
+      [254, 243, 199],  // Light yellow (low risk)
+      [253, 224, 139],
+      [248, 146, 79],   // Orange (medium risk)
+      [215, 48, 31],    // Red-orange (high risk)
+      [127, 29, 29],    // Deep red (very high risk)
+    ],
+    noData: "#2a2d35",
+  },
 };
 
 // Dark map tiles for premium feel
@@ -122,6 +133,10 @@ function MapController({ center, zoom, onZoomChange }: MapControllerProps) {
 }
 
 export function MapInner() {
+  // URL parameters for hidden features
+  const searchParams = useSearchParams();
+  const showHiddenMetrics = searchParams.get("arson") === "true";
+
   // State
   const [geojson, setGeojson] = useState<GeoJsonObject | null>(null);
   const [valuesByMunicipality, setValuesByMunicipality] = useState<
@@ -464,6 +479,7 @@ export function MapInner() {
         provinces={provinces}
         isCollapsed={sidebarCollapsed}
         onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
+        showHiddenMetrics={showHiddenMetrics}
       />
 
       {/* Map */}
@@ -484,11 +500,13 @@ export function MapInner() {
             onEachFeature={onEachFeature}
           />
         )}
-        <ZoneLayer
-          municipalityId={focusedMunicipalityId}
-          visible={currentZoom >= 11}
-          metric={filters.metric}
-        />
+        {filters.metric !== "vehicle_arson_rate" && (
+          <ZoneLayer
+            municipalityId={focusedMunicipalityId}
+            visible={currentZoom >= 11}
+            metric={filters.metric}
+          />
+        )}
         <MapController onZoomChange={handleZoomChange} />
       </MapContainer>
 
@@ -517,7 +535,7 @@ export function MapInner() {
       </div>
 
       {/* Zone indicator */}
-      {focusedMunicipalityId && currentZoom >= 11 && (
+      {focusedMunicipalityId && currentZoom >= 11 && filters.metric !== "vehicle_arson_rate" && (
         <div className="zone-indicator">
           <span className="zone-indicator__icon">◎</span>
           <span className="zone-indicator__text">

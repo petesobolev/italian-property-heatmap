@@ -53,6 +53,13 @@ const METRIC_CONFIG: Record<
     colors: ["#374151", "#4b5563", "#6b7280", "#9ca3af", "#d1d5db"],
     fixedRange: { min: 0, max: 100 },
   },
+  vehicle_arson_rate: {
+    label: "Vehicle Arson Rate",
+    unit: "per 100k",
+    format: (v) => v.toFixed(1),
+    colors: ["#fef3c7", "#fde68a", "#f8924f", "#d7301f", "#7f1d1d"],
+    fixedRange: { min: 0, max: 150 },
+  },
 };
 
 export function MapLegend({ metric, min, max, isLoading }: MapLegendProps) {
