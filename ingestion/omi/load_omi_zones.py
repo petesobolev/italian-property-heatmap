@@ -5,8 +5,18 @@ OMI Zone Boundaries Ingestion Script
 Loads OMI zone boundaries (geometries) from Agenzia delle Entrate into the database.
 This provides sub-municipality zone divisions that can be displayed on the map.
 
-Note: Property values API (risultato.php) is currently returning 404 errors.
-This script focuses on zone boundaries only.
+IMPORTANT: Geometry Source Priority
+-----------------------------------
+This script fetches geometry from the OMI API, but the API often returns the
+municipality boundary for all zones instead of individual zone boundaries.
+Therefore, this script will NOT overwrite existing geometry data.
+
+Geometry priority (best to worst):
+1. KML files from GEOPOI (load_kml_zones.py) - highest quality, individual zones
+2. Shapefile data (load_zone_geometries.py) - good quality, may be outdated
+3. OMI API (this script) - lowest quality, often duplicate geometries
+
+If a zone already has geometry from KML or shapefile, this script preserves it.
 
 Data Source: https://www1.agenziaentrate.gov.it/servizi/geopoi_omi/
 
@@ -322,6 +332,11 @@ def load_zones_for_province(conn, client: OMIClient, province_code: str, semeste
             """, (comune.codcom, istat_code, comune.name, province_code))
             comuni_mapped += 1
 
+        # Skip zones if we don't have ISTAT code (required by database schema)
+        if not istat_code:
+            logger.debug(f"  Skipping {comune.name} - no ISTAT code found")
+            continue
+
         # Get zones
         zones = client.get_zones(comune.codcom)
 
@@ -333,6 +348,10 @@ def load_zones_for_province(conn, client: OMIClient, province_code: str, semeste
                 omi_zone_id = f"{comune.codcom}_{zone.zona}"
 
                 # Insert zone with geometry (convert to MultiPolygon)
+                # IMPORTANT: On conflict, only update geometry if it's currently NULL.
+                # This preserves high-quality KML-sourced geometry and prevents
+                # overwriting with lower-quality API geometry (which often returns
+                # the municipality boundary instead of individual zone boundaries).
                 cur.execute("""
                     INSERT INTO core.omi_zones (
                         omi_zone_id, municipality_id, zone_code, zone_type,
@@ -345,17 +364,18 @@ def load_zones_for_province(conn, client: OMIClient, province_code: str, semeste
                     ON CONFLICT (omi_zone_id) DO UPDATE SET
                         zone_type = EXCLUDED.zone_type,
                         zone_description = EXCLUDED.zone_description,
-                        geom = ST_Multi(ST_SetSRID(ST_GeomFromGeoJSON(%s), 4326)),
+                        microzone_code = EXCLUDED.microzone_code,
+                        -- Only update geometry if current geometry is NULL
+                        geom = COALESCE(core.omi_zones.geom, EXCLUDED.geom),
                         updated_at = now()
                 """, (
                     omi_zone_id,
-                    istat_code,  # May be None
+                    istat_code,
                     zone.zona,
                     zone.fascia,
                     zone.description,
                     zone.link_zona,
                     json.dumps(geom),
-                    json.dumps(geom)  # For the UPDATE clause
                 ))
                 zones_loaded += 1
 
@@ -419,11 +439,24 @@ def main():
             total_mapped += mapped
         except Exception as e:
             logger.error(f"Error processing {province_code}: {e}")
-            conn.rollback()
+            # Try to reconnect if connection was lost
+            try:
+                conn.rollback()
+            except Exception:
+                logger.info("Reconnecting to database...")
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+                conn = get_db_connection()
+                logger.info("Reconnected to database")
         # Reset start_at after first province
         args.start_at = 0
 
-    conn.close()
+    try:
+        conn.close()
+    except Exception:
+        pass
 
     print(f"\n{'='*60}")
     print(f"COMPLETE")
