@@ -340,12 +340,20 @@ export function MapInner() {
   );
 
   // Check if municipality is eligible for 7% flat tax
+  // Requirements: Southern Italy region + population under 30,000
+  // (threshold increased from 20,000 to 30,000 per 2025 budget law)
   const isFlatTaxEligible = useCallback((feature: Feature | undefined): boolean => {
     if (!feature?.properties) return false;
     const regionCode = feature.properties.region_code as string | undefined;
-    // Eligible if in Southern Italy region
-    // Note: Full eligibility also requires population < 20,000, but we don't have that data yet
-    return regionCode ? FLAT_TAX_ELIGIBLE_REGIONS.has(regionCode.padStart(2, "0")) : false;
+    const population = feature.properties.population as number | null | undefined;
+
+    // Must be in Southern Italy region
+    const inEligibleRegion = regionCode ? FLAT_TAX_ELIGIBLE_REGIONS.has(regionCode.padStart(2, "0")) : false;
+
+    // Must have population under 30,000 (if population data available)
+    const populationEligible = population === null || population === undefined || population < 30000;
+
+    return inEligibleRegion && populationEligible;
   }, []);
 
   // Style function for GeoJSON
