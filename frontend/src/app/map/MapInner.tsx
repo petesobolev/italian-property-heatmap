@@ -356,22 +356,48 @@ export function MapInner() {
     return inEligibleRegion && populationEligible;
   }, []);
 
+  // Check if municipality is in a flat tax eligible region (Southern Italy)
+  const isInEligibleRegion = useCallback((feature: Feature | undefined): boolean => {
+    if (!feature?.properties) return false;
+    const regionCode = feature.properties.region_code as string | undefined;
+    return regionCode ? FLAT_TAX_ELIGIBLE_REGIONS.has(regionCode.padStart(2, "0")) : false;
+  }, []);
+
   // Style function for GeoJSON
   const style = useCallback(
     (feature: Feature | undefined) => {
       const id = feature?.properties?.municipality_id as string | undefined;
       const v = id ? valuesByMunicipality[id] : null;
 
-      const isEligible = filters.showFlatTaxEligible && isFlatTaxEligible(feature);
-
       if (filters.showFlatTaxEligible) {
-        // When flat tax overlay is active, highlight eligible municipalities
-        return {
-          color: isEligible ? "#22c55e" : "rgba(255, 255, 255, 0.1)",
-          weight: isEligible ? 2 : 0.5,
-          fillColor: isEligible ? "rgba(34, 197, 94, 0.4)" : "rgba(100, 100, 100, 0.3)",
-          fillOpacity: isEligible ? 0.7 : 0.4,
-        };
+        const isEligible = isFlatTaxEligible(feature);
+        const inRegion = isInEligibleRegion(feature);
+
+        if (isEligible) {
+          // Eligible: Southern Italy with population under 30k - Green
+          return {
+            color: "#22c55e",
+            weight: 2,
+            fillColor: "rgba(34, 197, 94, 0.4)",
+            fillOpacity: 0.7,
+          };
+        } else if (inRegion) {
+          // In Southern Italy but population too high (30k+) - Red/Orange
+          return {
+            color: "#ef4444",
+            weight: 2,
+            fillColor: "rgba(239, 68, 68, 0.4)",
+            fillOpacity: 0.7,
+          };
+        } else {
+          // Not in eligible region (Northern Italy) - Gray
+          return {
+            color: "rgba(255, 255, 255, 0.1)",
+            weight: 0.5,
+            fillColor: "rgba(100, 100, 100, 0.3)",
+            fillOpacity: 0.4,
+          };
+        }
       }
 
       return {
@@ -381,7 +407,7 @@ export function MapInner() {
         fillOpacity: 0.85,
       };
     },
-    [valuesByMunicipality, colorFor, filters.showFlatTaxEligible, isFlatTaxEligible]
+    [valuesByMunicipality, colorFor, filters.showFlatTaxEligible, isFlatTaxEligible, isInEligibleRegion]
   );
 
   // Zoom change handler
