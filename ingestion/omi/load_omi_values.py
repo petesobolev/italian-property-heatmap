@@ -288,35 +288,153 @@ class OMIClient:
             logger.warning(f"Could not fetch geometries for {istat_code}")
             return {}
 
-    def get_property_values(self, istat_code: str, zone_code: str,
-                           semester: str) -> list[PropertyValue]:
+    def get_property_types_for_zone(self, codcom: str, zone_code: str, semester: str) -> list[dict]:
         """
-        Scrape property values from the risultato.php page.
+        Get available property types for a zone using richiesta=8.
 
-        This is the main scraping function that extracts min/max values
-        from the HTML tables on the OMI website.
+        Args:
+            codcom: Cadastral code of the comune
+            zone_code: Zone code (e.g., B1, C2)
+            semester: Semester in YYYYS format (e.g., 20242)
+
+        Returns:
+            List of dicts with LINK_ZONA and DESCR_TIPOLOGIA
         """
-        # Build the URL for the results page
-        # Format semester: "20242" -> "2024-2"
-        sem_formatted = f"{semester[:4]}-{semester[4:]}"
-
-        url = urljoin(OMI_BASE_URL, "risultato.php")
+        url = urljoin(OMI_BASE_URL, "zoneomi.php")
         params = {
-            'codcom': istat_code,
-            'zona': zone_code,
-            'semestre': sem_formatted,
+            'richiesta': '8',
+            'codcom': codcom,
+            'semestre': semester,
+            'zo': zone_code,  # This is the key parameter!
         }
 
-        source_url = f"{url}?codcom={istat_code}&zona={zone_code}&semestre={sem_formatted}"
-
         try:
-            html = self._make_request(url, params=params, expect_json=False)
-            return self._parse_values_html(
-                html, istat_code, zone_code, semester, source_url
-            )
-        except OMIIngestionError as e:
-            logger.warning(f"Failed to get values for {istat_code}/{zone_code}: {e}")
+            data = self._make_request(url, params=params)
+            if data and isinstance(data, list):
+                return data
+        except OMIIngestionError:
+            pass
+
+        return []
+
+    def get_property_values(self, codcom: str, zone_code: str,
+                           semester: str) -> list[PropertyValue]:
+        """
+        Fetch property values using the stampaomi.php endpoint.
+
+        This is a two-step process:
+        1. Get property types via richiesta=8 (returns LINK_ZONA)
+        2. Scrape stampaomi.php for actual values
+
+        Args:
+            codcom: Cadastral code (e.g., H501)
+            zone_code: Zone code (e.g., B1)
+            semester: Semester in YYYYS format (e.g., 20242)
+        """
+        # Step 1: Get property types to get LINK_ZONA
+        property_types = self.get_property_types_for_zone(codcom, zone_code, semester)
+        if not property_types:
+            logger.debug(f"No property types found for {codcom}/{zone_code}")
             return []
+
+        values = []
+        omi_zone_id = f"{codcom}_{zone_code}"
+
+        # Step 2: Get values for each property type
+        for pt in property_types:
+            link_zona = pt.get('LINK_ZONA', '')
+            descr = pt.get('DESCR_TIPOLOGIA', '')
+            type_code = descr[0].upper() if descr else 'R'  # R=Residenziale, C=Commerciale, P=Produttiva
+
+            # URL format: stampaomi.php?{codcom}/{link_zona}/{semester}/{type}/{zone}/{lon}/{lat}
+            url = f"{OMI_BASE_URL}stampaomi.php?{codcom}/{link_zona}/{semester}/{type_code}/{zone_code}/12.5/41.9"
+            source_url = url
+
+            try:
+                html = self._make_request(url, params={}, expect_json=False)
+                parsed_values = self._parse_stampaomi_html(
+                    html, omi_zone_id, codcom, semester, source_url
+                )
+                values.extend(parsed_values)
+            except OMIIngestionError as e:
+                logger.debug(f"Failed to get values from {url}: {e}")
+                continue
+
+        return values
+
+    def _parse_stampaomi_html(self, html: str, omi_zone_id: str, municipality_id: str,
+                              semester: str, source_url: str) -> list[PropertyValue]:
+        """Parse the stampaomi.php HTML response to extract property values."""
+        values = []
+        soup = BeautifulSoup(html, 'html.parser')
+
+        # Find all table rows
+        rows = soup.find_all('tr')
+
+        for row in rows:
+            cells = row.find_all('td')
+            if len(cells) < 5:
+                continue
+
+            try:
+                # Structure: Property Type | State | Min Value | Max Value | Surface | Min Rent | Max Rent | Surface
+                property_subtype = cells[0].get_text(strip=True).replace('\xa0', '')
+                state = cells[1].get_text(strip=True).replace('\xa0', '') if len(cells) > 1 else None
+
+                # Skip header rows or empty data
+                if not property_subtype or property_subtype.lower() in ['tipologia', 'tipo', 'min', 'max', '']:
+                    continue
+
+                # Parse numeric values (Italian format: 1.234,56)
+                def parse_number(text: str) -> Optional[float]:
+                    if not text:
+                        return None
+                    text = re.sub(r'[^\d,.\-]', '', text.strip())
+                    if not text or text == '-':
+                        return None
+                    text = text.replace('.', '').replace(',', '.')
+                    try:
+                        return float(text)
+                    except ValueError:
+                        return None
+
+                value_min = parse_number(cells[2].get_text(strip=True))
+                value_max = parse_number(cells[3].get_text(strip=True))
+
+                # Skip if no value data
+                if value_min is None and value_max is None:
+                    continue
+
+                # Parse rent values (columns 5 and 6)
+                rent_min = None
+                rent_max = None
+                if len(cells) >= 7:
+                    rent_min = parse_number(cells[5].get_text(strip=True))
+                    rent_max = parse_number(cells[6].get_text(strip=True))
+
+                # Normalize property type
+                normalized_type = PROPERTY_TYPE_MAPPING.get(
+                    property_subtype.lower(),
+                    property_subtype.lower().replace(' ', '_')
+                )
+
+                values.append(PropertyValue(
+                    omi_zone_id=omi_zone_id,
+                    municipality_id=municipality_id,
+                    semester_id=semester,
+                    property_type=normalized_type,
+                    state=STATE_MAPPING.get(state, state),
+                    value_min_eur_sqm=value_min,
+                    value_max_eur_sqm=value_max,
+                    rent_min_eur_sqm_month=rent_min,
+                    rent_max_eur_sqm_month=rent_max,
+                    source_url=source_url
+                ))
+            except (IndexError, ValueError) as e:
+                logger.debug(f"Error parsing row: {e}")
+                continue
+
+        return values
 
     def _parse_values_html(self, html: str, istat_code: str, zone_code: str,
                           semester: str, source_url: str) -> list[PropertyValue]:
