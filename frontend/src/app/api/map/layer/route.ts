@@ -45,9 +45,82 @@ export async function GET(request: Request) {
     });
   }
 
-  // Standard metrics from forecasts table
+  // Handle actual observed property values from mart table
+  if (metric === "value_mid_eur_sqm") {
+    // Get latest period with data from mart.municipality_values_semester
+    const { data: latestPeriod, error: periodError } = await supabase
+      .schema("mart")
+      .from("municipality_values_semester")
+      .select("period_id")
+      .eq("property_segment", segment)
+      .not("value_mid_eur_sqm", "is", null)
+      .order("period_id", { ascending: false })
+      .limit(1);
+
+    if (periodError) {
+      return NextResponse.json(
+        {
+          metric,
+          horizonMonths,
+          segment,
+          asOf: new Date().toISOString(),
+          error: periodError.message,
+          features: [],
+        },
+        { status: 500 }
+      );
+    }
+
+    const latestPeriodId = latestPeriod?.[0]?.period_id ?? null;
+    if (!latestPeriodId) {
+      return NextResponse.json({
+        metric,
+        horizonMonths,
+        segment,
+        asOf: new Date().toISOString(),
+        features: [],
+        note: "No property values found yet. Run the OMI ingestion to load data.",
+      });
+    }
+
+    // Get municipality values for the latest period
+    const { data: martRows, error: martError } = await supabase
+      .schema("mart")
+      .from("municipality_values_semester")
+      .select("municipality_id, value_mid_eur_sqm, value_min_eur_sqm, value_max_eur_sqm")
+      .eq("period_id", latestPeriodId)
+      .eq("property_segment", segment)
+      .not("value_mid_eur_sqm", "is", null);
+
+    if (martError) {
+      return NextResponse.json(
+        {
+          metric,
+          horizonMonths,
+          segment,
+          asOf: new Date().toISOString(),
+          error: martError.message,
+          features: [],
+        },
+        { status: 500 }
+      );
+    }
+
+    return NextResponse.json({
+      metric,
+      horizonMonths,
+      segment,
+      asOf: latestPeriodId,
+      source: "mart.municipality_values_semester",
+      features: (martRows ?? []).map((r) => ({
+        municipalityId: r.municipality_id,
+        value: r.value_mid_eur_sqm,
+      })),
+    });
+  }
+
+  // Forecast metrics from model.forecasts_municipality
   // Latest published snapshot approach (MVP): pick latest forecast_date for requested horizon+segment.
-  // Later we can switch this to a dedicated publish view with approvals.
   const { data: latest, error: latestError } = await supabase
     .schema("model")
     .from("forecasts_municipality")
@@ -111,8 +184,6 @@ export async function GET(request: Request) {
 
   const valueKey = (() => {
     switch (metric) {
-      case "value_mid_eur_sqm":
-        return "value_mid_eur_sqm" as const;
       case "forecast_appreciation_pct":
         return "forecast_appreciation_pct" as const;
       case "forecast_gross_yield_pct":

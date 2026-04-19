@@ -100,9 +100,10 @@ class Province:
 @dataclass
 class Comune:
     """Comune (municipality) data from OMI API."""
-    istat_code: str  # 6-digit ISTAT code
+    codcom: str  # Cadastral code (e.g., "H501" for Roma)
     name: str
     province_code: str
+    istat_code: Optional[str] = None  # 6-digit ISTAT code (resolved via mapping)
 
 
 @dataclass
@@ -199,7 +200,7 @@ class OMIClient:
         for item in data:
             if isinstance(item, list) and len(item) >= 2:
                 comuni.append(Comune(
-                    istat_code=str(item[0]),
+                    codcom=str(item[0]),
                     name=item[1],
                     province_code=province_code
                 ))
@@ -209,7 +210,7 @@ class OMIClient:
                 name = item.get('DIZIONE', item.get('nome', item.get('name', '')))
                 if code:
                     comuni.append(Comune(
-                        istat_code=str(code),  # This is actually the cadastral code
+                        codcom=str(code),  # Cadastral code (not ISTAT!)
                         name=name,
                         province_code=province_code
                     ))
@@ -482,7 +483,64 @@ class DatabaseLoader:
         self.conn.autocommit = False
         self.cursor = self.conn.cursor(cursor_factory=RealDictCursor)
         self.ingestion_run_id: Optional[int] = None
+        self._istat_cache: dict[str, Optional[str]] = {}
         logger.info("Connected to database via direct PostgreSQL connection")
+
+    def find_istat_code(self, codcom: str, comune_name: str, province_code: str) -> Optional[str]:
+        """Find ISTAT code for a cadastral code, using mapping table and name matching."""
+        # Check cache first
+        if codcom in self._istat_cache:
+            return self._istat_cache[codcom]
+
+        # Try mapping table first
+        self.cursor.execute("""
+            SELECT municipality_id FROM core.cadastral_istat_mapping WHERE codcom = %s
+        """, (codcom,))
+        result = self.cursor.fetchone()
+        if result:
+            self._istat_cache[codcom] = result['municipality_id']
+            return result['municipality_id']
+
+        # Try name matching
+        normalized = comune_name.upper().strip()
+
+        # Exact match
+        self.cursor.execute("""
+            SELECT municipality_id FROM core.municipalities WHERE UPPER(municipality_name) = %s
+        """, (normalized,))
+        result = self.cursor.fetchone()
+        if result:
+            self._save_mapping(codcom, result['municipality_id'], comune_name, province_code)
+            return result['municipality_id']
+
+        # Try with province filter (province code is 2-letter abbreviation, need to map to numeric)
+        # For now, try fuzzy match
+        self.cursor.execute("""
+            SELECT municipality_id FROM core.municipalities
+            WHERE UPPER(municipality_name) LIKE %s LIMIT 1
+        """, (f'{normalized}%',))
+        result = self.cursor.fetchone()
+        if result:
+            self._save_mapping(codcom, result['municipality_id'], comune_name, province_code)
+            return result['municipality_id']
+
+        # Not found
+        self._istat_cache[codcom] = None
+        return None
+
+    def _save_mapping(self, codcom: str, istat_code: str, name: str, province_code: str):
+        """Save cadastral to ISTAT mapping."""
+        try:
+            self.cursor.execute("""
+                INSERT INTO core.cadastral_istat_mapping (codcom, municipality_id, municipality_name, province_code)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (codcom) DO UPDATE SET municipality_id = EXCLUDED.municipality_id
+            """, (codcom, istat_code, name, province_code))
+            self.conn.commit()
+            self._istat_cache[codcom] = istat_code
+        except Exception as e:
+            self.conn.rollback()
+            logger.debug(f"Could not save mapping {codcom} -> {istat_code}: {e}")
 
     def start_ingestion_run(self, source_name: str = "omi_values") -> int:
         """Create a new ingestion run record."""
@@ -770,20 +828,27 @@ def run_ingestion(
                 comuni = comuni[:5]
 
             for com_idx, comune in enumerate(comuni):
-                logger.info(f"  [{com_idx + 1}/{len(comuni)}] {comune.name} ({comune.istat_code})")
+                # Look up ISTAT code from cadastral code
+                istat_code = db_loader.find_istat_code(comune.codcom, comune.name, comune.province_code)
+                if not istat_code:
+                    logger.debug(f"  Skipping {comune.name} ({comune.codcom}) - no ISTAT mapping found")
+                    continue
+
+                comune.istat_code = istat_code
+                logger.info(f"  [{com_idx + 1}/{len(comuni)}] {comune.name} ({comune.codcom} -> {istat_code})")
 
                 try:
-                    # Get zones for this comune
-                    zones = omi_client.get_zones(comune.istat_code)
+                    # Get zones for this comune (using cadastral code for API)
+                    zones = omi_client.get_zones(comune.codcom)
 
                     if not zones:
-                        logger.debug(f"    No zones found for {comune.istat_code}")
+                        logger.debug(f"    No zones found for {comune.codcom}")
                         continue
 
                     # Process each zone
                     for zone in zones:
-                        # Store zone definition
-                        db_loader.upsert_omi_zone(zone, comune.istat_code)
+                        # Store zone definition (using ISTAT code for database)
+                        db_loader.upsert_omi_zone(zone, istat_code)
 
                         if skip_values:
                             continue
@@ -792,8 +857,13 @@ def run_ingestion(
                         for semester in semesters:
                             try:
                                 values = omi_client.get_property_values(
-                                    comune.istat_code, zone.zone_code, semester
+                                    comune.codcom, zone.zone_code, semester
                                 )
+
+                                # Update municipality_id to use ISTAT code
+                                for val in values:
+                                    val.municipality_id = istat_code
+                                    val.omi_zone_id = f"{istat_code}_{zone.zone_code}"
 
                                 if values:
                                     loaded, rejected = db_loader.insert_property_values(values)
@@ -811,7 +881,7 @@ def run_ingestion(
                     if not skip_values:
                         for semester in semesters:
                             period_id = f"{semester[:4]}H{semester[4]}"
-                            db_loader.aggregate_municipality_values(comune.istat_code, period_id)
+                            db_loader.aggregate_municipality_values(istat_code, period_id)
 
                 except OMIIngestionError as e:
                     logger.warning(f"    Error processing {comune.name}: {e}")
