@@ -142,15 +142,16 @@ function MapController({ center, zoom, onZoomChange, onCenterChange }: MapContro
 }
 
 // Check if a point is inside a polygon using ray casting algorithm
-function pointInPolygon(point: [number, number], polygon: number[][]): boolean {
-  const [lat, lng] = point;
+// Point-in-polygon using ray casting algorithm
+// Uses x/y coordinates (GeoJSON order: [lng, lat] = [x, y])
+function pointInPolygon(x: number, y: number, polygon: number[][]): boolean {
   let inside = false;
 
   for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
-    const [xi, yi] = polygon[i];
-    const [xj, yj] = polygon[j];
+    const xi = polygon[i][0], yi = polygon[i][1];
+    const xj = polygon[j][0], yj = polygon[j][1];
 
-    if (((yi > lat) !== (yj > lat)) && (lng < (xj - xi) * (lat - yi) / (yj - yi) + xi)) {
+    if (((yi > y) !== (yj > y)) && (x < (xj - xi) * (y - yi) / (yj - yi) + xi)) {
       inside = !inside;
     }
   }
@@ -159,11 +160,17 @@ function pointInPolygon(point: [number, number], polygon: number[][]): boolean {
 }
 
 // Find municipality at a given point
+// Input point is [lat, lng] (Leaflet order), GeoJSON uses [lng, lat]
 function findMunicipalityAtPoint(
   point: [number, number],
   geojson: FeatureCollection | null
 ): string | null {
   if (!geojson?.features) return null;
+
+  // Convert from Leaflet [lat, lng] to GeoJSON [lng, lat] order
+  const [lat, lng] = point;
+  const x = lng;
+  const y = lat;
 
   for (const feature of geojson.features) {
     const geometry = feature.geometry;
@@ -172,21 +179,15 @@ function findMunicipalityAtPoint(
     const municipalityId = feature.properties?.municipality_id as string | undefined;
     if (!municipalityId) continue;
 
-    // Handle different geometry types
     if (geometry.type === "Polygon") {
       const coords = geometry.coordinates[0] as number[][];
-      // GeoJSON uses [lng, lat], but our point is [lat, lng]
-      const swappedPoint: [number, number] = [point[1], point[0]];
-      const swappedCoords = coords.map(([lng, lat]) => [lat, lng] as number[]);
-      if (pointInPolygon(swappedPoint, swappedCoords)) {
+      if (pointInPolygon(x, y, coords)) {
         return municipalityId;
       }
     } else if (geometry.type === "MultiPolygon") {
       for (const polygon of geometry.coordinates) {
         const coords = polygon[0] as number[][];
-        const swappedPoint: [number, number] = [point[1], point[0]];
-        const swappedCoords = coords.map(([lng, lat]) => [lat, lng] as number[]);
-        if (pointInPolygon(swappedPoint, swappedCoords)) {
+        if (pointInPolygon(x, y, coords)) {
           return municipalityId;
         }
       }
