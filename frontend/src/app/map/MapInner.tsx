@@ -104,9 +104,10 @@ interface MapControllerProps {
   center?: [number, number];
   zoom?: number;
   onZoomChange?: (zoom: number) => void;
+  onCenterChange?: (center: [number, number]) => void;
 }
 
-function MapController({ center, zoom, onZoomChange }: MapControllerProps) {
+function MapController({ center, zoom, onZoomChange, onCenterChange }: MapControllerProps) {
   const map = useMap();
 
   useEffect(() => {
@@ -120,14 +121,77 @@ function MapController({ center, zoom, onZoomChange }: MapControllerProps) {
       onZoomChange?.(map.getZoom());
     };
 
+    const handleMove = () => {
+      const c = map.getCenter();
+      onCenterChange?.([c.lat, c.lng]);
+    };
+
     map.on("zoomend", handleZoom);
-    // Call once on mount to sync initial zoom
+    map.on("moveend", handleMove);
+    // Call once on mount to sync initial state
     handleZoom();
+    handleMove();
 
     return () => {
       map.off("zoomend", handleZoom);
+      map.off("moveend", handleMove);
     };
-  }, [map, onZoomChange]);
+  }, [map, onZoomChange, onCenterChange]);
+
+  return null;
+}
+
+// Check if a point is inside a polygon using ray casting algorithm
+function pointInPolygon(point: [number, number], polygon: number[][]): boolean {
+  const [lat, lng] = point;
+  let inside = false;
+
+  for (let i = 0, j = polygon.length - 1; i < polygon.length; j = i++) {
+    const [xi, yi] = polygon[i];
+    const [xj, yj] = polygon[j];
+
+    if (((yi > lat) !== (yj > lat)) && (lng < (xj - xi) * (lat - yi) / (yj - yi) + xi)) {
+      inside = !inside;
+    }
+  }
+
+  return inside;
+}
+
+// Find municipality at a given point
+function findMunicipalityAtPoint(
+  point: [number, number],
+  geojson: FeatureCollection | null
+): string | null {
+  if (!geojson?.features) return null;
+
+  for (const feature of geojson.features) {
+    const geometry = feature.geometry;
+    if (!geometry) continue;
+
+    const municipalityId = feature.properties?.municipality_id as string | undefined;
+    if (!municipalityId) continue;
+
+    // Handle different geometry types
+    if (geometry.type === "Polygon") {
+      const coords = geometry.coordinates[0] as number[][];
+      // GeoJSON uses [lng, lat], but our point is [lat, lng]
+      const swappedPoint: [number, number] = [point[1], point[0]];
+      const swappedCoords = coords.map(([lng, lat]) => [lat, lng] as number[]);
+      if (pointInPolygon(swappedPoint, swappedCoords)) {
+        return municipalityId;
+      }
+    } else if (geometry.type === "MultiPolygon") {
+      for (const polygon of geometry.coordinates) {
+        const coords = polygon[0] as number[][];
+        const swappedPoint: [number, number] = [point[1], point[0]];
+        const swappedCoords = coords.map(([lng, lat]) => [lat, lng] as number[]);
+        if (pointInPolygon(swappedPoint, swappedCoords)) {
+          return municipalityId;
+        }
+      }
+    }
+  }
 
   return null;
 }
@@ -150,7 +214,9 @@ export function MapInner() {
 
   // Zone layer state
   const [currentZoom, setCurrentZoom] = useState(6);
+  const [mapCenter, setMapCenter] = useState<[number, number]>([41.8719, 12.5674]);
   const [focusedMunicipalityId, setFocusedMunicipalityId] = useState<string | null>(null);
+  const [autoDetectedMunicipalityId, setAutoDetectedMunicipalityId] = useState<string | null>(null);
 
   // Compare state
   const [compareList, setCompareList] = useState<MunicipalityData[]>([]);
@@ -416,8 +482,28 @@ export function MapInner() {
     // Clear focused municipality if zoomed out too far
     if (zoom < 10) {
       setFocusedMunicipalityId(null);
+      setAutoDetectedMunicipalityId(null);
     }
   }, []);
+
+  // Center change handler
+  const handleCenterChange = useCallback((center: [number, number]) => {
+    setMapCenter(center);
+  }, []);
+
+  // Auto-detect municipality at map center when zoomed in
+  useEffect(() => {
+    if (currentZoom < 11 || !geojson || geojson.type !== "FeatureCollection") {
+      setAutoDetectedMunicipalityId(null);
+      return;
+    }
+
+    const detected = findMunicipalityAtPoint(mapCenter, geojson as FeatureCollection);
+    setAutoDetectedMunicipalityId(detected);
+  }, [currentZoom, mapCenter, geojson]);
+
+  // Effective municipality ID for zones: manual focus takes precedence over auto-detect
+  const effectiveMunicipalityId = focusedMunicipalityId || autoDetectedMunicipalityId;
 
   // Click handler
   const handleFeatureClick = useCallback((feature: Feature) => {
@@ -536,12 +622,12 @@ export function MapInner() {
         )}
         {filters.metric !== "vehicle_arson_rate" && (
           <ZoneLayer
-            municipalityId={focusedMunicipalityId}
+            municipalityId={effectiveMunicipalityId}
             visible={currentZoom >= 11}
             metric={filters.metric}
           />
         )}
-        <MapController onZoomChange={handleZoomChange} />
+        <MapController onZoomChange={handleZoomChange} onCenterChange={handleCenterChange} />
       </MapContainer>
 
       {/* Legend */}
@@ -569,19 +655,21 @@ export function MapInner() {
       </div>
 
       {/* Zone indicator */}
-      {focusedMunicipalityId && currentZoom >= 11 && filters.metric !== "vehicle_arson_rate" && (
+      {effectiveMunicipalityId && currentZoom >= 11 && filters.metric !== "vehicle_arson_rate" && (
         <div className="zone-indicator">
           <span className="zone-indicator__icon">◎</span>
           <span className="zone-indicator__text">
-            Zones: {selectedMunicipality?.name || focusedMunicipalityId}
+            Zones: {selectedMunicipality?.name || effectiveMunicipalityId}
           </span>
-          <button
-            className="zone-indicator__close"
-            onClick={() => setFocusedMunicipalityId(null)}
-            aria-label="Clear zone focus"
-          >
-            ×
-          </button>
+          {focusedMunicipalityId && (
+            <button
+              className="zone-indicator__close"
+              onClick={() => setFocusedMunicipalityId(null)}
+              aria-label="Clear zone focus"
+            >
+              ×
+            </button>
+          )}
         </div>
       )}
 

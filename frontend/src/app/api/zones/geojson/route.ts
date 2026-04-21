@@ -276,28 +276,43 @@ export async function GET(request: Request) {
   if (geojsonData?.features?.length > 0 &&
       geojsonData.features.some((f: { geometry: unknown }) => f.geometry !== null)) {
     // Real geometry exists in database
+    // Zone IDs might use cadastral codes (H501_B1) or ISTAT codes (058091_B1)
+    // We need to try both formats when looking up values
     const zoneIds = geojsonData.features.map(
       (f: { properties: { omi_zone_id: string } }) => f.properties.omi_zone_id
     );
+
+    // Also build ISTAT-formatted IDs (municipalityId is already ISTAT format)
+    const istatZoneIds = geojsonData.features.map(
+      (f: { properties: { omi_zone_id: string } }) => {
+        const zoneCode = f.properties.omi_zone_id.split("_").slice(1).join("_");
+        return `${municipalityId}_${zoneCode}`;
+      }
+    );
+
+    // Query values using both ID formats
+    const allZoneIds = [...new Set([...zoneIds, ...istatZoneIds])];
 
     const { data: values } = await supabase
       .schema("mart")
       .from("omi_zone_values_semester")
       .select("omi_zone_id, value_mid_eur_sqm")
-      .in("omi_zone_id", zoneIds)
+      .in("omi_zone_id", allZoneIds)
       .eq("property_segment", segment)
       .order("period_id", { ascending: false });
 
-    const latestValues = new Map<string, number | null>();
+    // Build a map from zone_code to value (to handle both ID formats)
+    const valuesByZoneCode = new Map<string, number | null>();
     for (const v of (values as ZoneValueRow[]) ?? []) {
-      if (!latestValues.has(v.omi_zone_id)) {
-        latestValues.set(v.omi_zone_id, v.value_mid_eur_sqm);
+      const zoneCode = v.omi_zone_id.split("_").slice(1).join("_");
+      if (!valuesByZoneCode.has(zoneCode)) {
+        valuesByZoneCode.set(zoneCode, v.value_mid_eur_sqm);
       }
     }
 
     for (const feature of geojsonData.features) {
-      feature.properties.value_mid_eur_sqm =
-        latestValues.get(feature.properties.omi_zone_id) ?? null;
+      const zoneCode = feature.properties.omi_zone_id.split("_").slice(1).join("_");
+      feature.properties.value_mid_eur_sqm = valuesByZoneCode.get(zoneCode) ?? null;
     }
 
     return NextResponse.json({

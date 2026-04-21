@@ -25,14 +25,15 @@ const ZONE_VISIBLE_ZOOM = 11;
 // Zoom level to show permanent zone labels (same as visible zoom)
 const ZONE_LABEL_ZOOM = 11;
 
-// Color palette for zones based on zone type
-const ZONE_TYPE_COLORS: Record<string, string> = {
-  B: "rgba(196, 120, 92, 0.6)", // Central - terracotta
-  C: "rgba(74, 144, 181, 0.6)", // Semi-central - blue
-  D: "rgba(124, 196, 212, 0.6)", // Peripheral - light blue
-  E: "rgba(184, 224, 236, 0.6)", // Suburban - very light blue
-  R: "rgba(100, 140, 100, 0.6)", // Rural - green
-};
+// Color scale matching municipality layer (dark blue to light blue)
+const VALUE_COLOR_STOPS = [
+  [30, 58, 95],    // Deep Mediterranean blue (low values)
+  [45, 90, 135],
+  [74, 144, 181],
+  [124, 196, 212],
+  [184, 224, 236], // Light blue (high values)
+];
+const NO_DATA_COLOR = "rgba(42, 45, 53, 0.6)"; // Neutral gray for missing data
 
 // Get zone center for label placement
 function getFeatureCenter(feature: Feature): LatLngExpression | null {
@@ -135,29 +136,39 @@ export function ZoneLayer({ municipalityId, visible, metric }: ZoneLayerProps) {
     };
   }, [municipalityId]);
 
-  // Color function for zones
+  // Color function for zones - matches municipality layer color scale
   const colorFor = useCallback(
     (feature: Feature | undefined) => {
       const props = feature?.properties as ZoneProperties | undefined;
-      const zoneType = props?.zone_type?.charAt(0) ?? "";
+      const value = props?.value_mid_eur_sqm;
 
-      // If we have value data and are showing value metric, use value-based coloring
-      if (metric === "value_mid_eur_sqm" && props?.value_mid_eur_sqm != null) {
-        const { min, max } = valueDomain;
-        if (max > min) {
-          const t = Math.max(0, Math.min(1, (props.value_mid_eur_sqm - min) / (max - min)));
-          // Use a blue-to-terracotta scale
-          const r = Math.round(45 + t * 151); // 45 -> 196
-          const g = Math.round(90 + t * 30);  // 90 -> 120
-          const b = Math.round(135 - t * 43); // 135 -> 92
-          return `rgba(${r}, ${g}, ${b}, 0.65)`;
-        }
+      // No value data - show neutral gray
+      if (value == null || !Number.isFinite(value)) {
+        return NO_DATA_COLOR;
       }
 
-      // Default to zone type coloring
-      return ZONE_TYPE_COLORS[zoneType] || "rgba(150, 150, 150, 0.5)";
+      // Interpolate using the same color scale as municipalities
+      const { min, max } = valueDomain;
+      if (max <= min) {
+        return NO_DATA_COLOR;
+      }
+
+      const t = Math.max(0, Math.min(1, (value - min) / (max - min)));
+      const stops = VALUE_COLOR_STOPS;
+
+      // Interpolate between stops
+      const scaledT = t * (stops.length - 1);
+      const lowerIdx = Math.floor(scaledT);
+      const upperIdx = Math.min(lowerIdx + 1, stops.length - 1);
+      const localT = scaledT - lowerIdx;
+
+      const rgb = stops[lowerIdx].map((c, i) =>
+        Math.round(c + (stops[upperIdx][i] - c) * localT)
+      );
+
+      return `rgba(${rgb[0]}, ${rgb[1]}, ${rgb[2]}, 0.75)`;
     },
-    [metric, valueDomain]
+    [valueDomain]
   );
 
   // Style function for zones
@@ -181,7 +192,6 @@ export function ZoneLayer({ municipalityId, visible, metric }: ZoneLayerProps) {
   const onEachFeature = useCallback(
     (feature: Feature, layer: Layer) => {
       const props = feature.properties as ZoneProperties;
-      const zoneName = props.zone_description || props.zone_code;
       const value = props.value_mid_eur_sqm;
 
       // Build tooltip content
@@ -189,8 +199,11 @@ export function ZoneLayer({ municipalityId, visible, metric }: ZoneLayerProps) {
       if (props.zone_description) {
         tooltipContent += `<br/>${props.zone_description}`;
       }
-      if (value != null) {
-        tooltipContent += `<br/><span style="color: #c4785c">\u20AC${Math.round(value).toLocaleString()}/m\u00B2</span>`;
+      // Always show value line - with actual value or N/A
+      if (value != null && Number.isFinite(value)) {
+        tooltipContent += `<br/><span style="color: #4a90b5; font-weight: 600">\u20AC${Math.round(value).toLocaleString()}/m\u00B2</span>`;
+      } else {
+        tooltipContent += `<br/><span style="color: #6b7a90">Value: N/A</span>`;
       }
       if (props.zone_type) {
         const typeLabel = getZoneTypeLabel(props.zone_type);
@@ -244,7 +257,12 @@ export function ZoneLayer({ municipalityId, visible, metric }: ZoneLayerProps) {
   }, [zones]);
 
   // Don't render if not visible or zoom is too low
-  if (!visible || currentZoom < ZONE_VISIBLE_ZOOM || !zones) {
+  if (!visible || currentZoom < ZONE_VISIBLE_ZOOM) {
+    return null;
+  }
+
+  // Show loading state or no zones message
+  if (loading || !zones || zones.features.length === 0) {
     return null;
   }
 
@@ -253,7 +271,7 @@ export function ZoneLayer({ municipalityId, visible, metric }: ZoneLayerProps) {
   return (
     <>
       <GeoJSON
-        key={`zones-${municipalityId}-${metric}`}
+        key={`zones-${municipalityId}-${valueDomain.min}-${valueDomain.max}`}
         data={zones}
         style={style}
         onEachFeature={onEachFeature}

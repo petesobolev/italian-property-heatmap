@@ -597,18 +597,52 @@ class DatabaseLoader:
     """Handles loading data into PostgreSQL database via direct connection."""
 
     def __init__(self, db_params: dict):
-        self.conn = psycopg2.connect(**db_params)
-        self.conn.autocommit = False
-        self.cursor = self.conn.cursor(cursor_factory=RealDictCursor)
+        self.db_params = db_params
+        self.conn = None
+        self.cursor = None
         self.ingestion_run_id: Optional[int] = None
         self._istat_cache: dict[str, Optional[str]] = {}
+        self._connect()
+
+    def _connect(self):
+        """Establish database connection."""
+        if self.cursor:
+            try:
+                self.cursor.close()
+            except Exception:
+                pass
+        if self.conn:
+            try:
+                self.conn.close()
+            except Exception:
+                pass
+
+        self.conn = psycopg2.connect(**self.db_params)
+        self.conn.autocommit = False
+        self.cursor = self.conn.cursor(cursor_factory=RealDictCursor)
         logger.info("Connected to database via direct PostgreSQL connection")
+
+    def _ensure_connection(self):
+        """Check connection health and reconnect if needed."""
+        try:
+            # Simple health check
+            self.cursor.execute("SELECT 1")
+            self.cursor.fetchone()
+        except (psycopg2.InterfaceError, psycopg2.OperationalError) as e:
+            logger.warning(f"Connection lost, reconnecting: {e}")
+            self._connect()
+            # Re-establish ingestion run context if we had one
+            if self.ingestion_run_id:
+                logger.info(f"Reconnected, continuing ingestion run {self.ingestion_run_id}")
 
     def find_istat_code(self, codcom: str, comune_name: str, province_code: str) -> Optional[str]:
         """Find ISTAT code for a cadastral code, using mapping table and name matching."""
         # Check cache first
         if codcom in self._istat_cache:
             return self._istat_cache[codcom]
+
+        # Ensure connection is alive
+        self._ensure_connection()
 
         # Try mapping table first
         self.cursor.execute("""
@@ -699,6 +733,7 @@ class DatabaseLoader:
             start_date = f"{year}-07-01"
             end_date = f"{year}-12-31"
 
+        self._ensure_connection()
         try:
             self.cursor.execute("""
                 INSERT INTO core.time_periods (period_id, period_type, period_start_date, period_end_date, year, semester)
@@ -714,6 +749,7 @@ class DatabaseLoader:
     def upsert_omi_zone(self, zone: OMIZone, municipality_id: str):
         """Insert or update an OMI zone."""
         omi_zone_id = f"{municipality_id}_{zone.zone_code}"
+        self._ensure_connection()
 
         try:
             self.cursor.execute("""
@@ -737,6 +773,7 @@ class DatabaseLoader:
         if not values:
             return 0, 0
 
+        self._ensure_connection()
         loaded = 0
         rejected = 0
 
@@ -776,6 +813,7 @@ class DatabaseLoader:
 
     def aggregate_municipality_values(self, municipality_id: str, period_id: str):
         """Aggregate zone values to municipality level and insert into mart table."""
+        self._ensure_connection()
         try:
             self.cursor.execute("""
                 SELECT value_min_eur_sqm, value_max_eur_sqm, rent_min_eur_sqm_month, rent_max_eur_sqm_month
