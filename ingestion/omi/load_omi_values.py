@@ -635,6 +635,19 @@ class DatabaseLoader:
             if self.ingestion_run_id:
                 logger.info(f"Reconnected, continuing ingestion run {self.ingestion_run_id}")
 
+    def municipality_has_data(self, municipality_id: str, period_id: str) -> bool:
+        """Check if a municipality already has property value data for a given period."""
+        self._ensure_connection()
+        self.cursor.execute("""
+            SELECT EXISTS(
+                SELECT 1 FROM raw.omi_property_values
+                WHERE municipality_id = %s AND period_id = %s
+                LIMIT 1
+            )
+        """, (municipality_id, period_id))
+        result = self.cursor.fetchone()
+        return result['exists'] if result else False
+
     def find_istat_code(self, codcom: str, comune_name: str, province_code: str) -> Optional[str]:
         """Find ISTAT code for a cadastral code, using mapping table and name matching."""
         # Check cache first
@@ -913,6 +926,7 @@ def run_ingestion(
     test_mode: bool = False,
     skip_geometries: bool = False,
     skip_values: bool = False,
+    skip_loaded: bool = False,
 ):
     """
     Main ingestion function.
@@ -923,6 +937,7 @@ def run_ingestion(
         test_mode: If True, only process Roma with limited data
         skip_geometries: Skip fetching zone geometries
         skip_values: Skip scraping property values (only load zones)
+        skip_loaded: Skip municipalities that already have data for the requested semester
     """
     logger.info("=" * 60)
     logger.info("Starting OMI Property Values Ingestion")
@@ -991,6 +1006,14 @@ def run_ingestion(
                     continue
 
                 comune.istat_code = istat_code
+
+                # Check if municipality already has data for requested semesters
+                if skip_loaded and not skip_values:
+                    period_id = f"{semesters[0][:4]}H{semesters[0][4]}"
+                    if db_loader.municipality_has_data(istat_code, period_id):
+                        logger.debug(f"  [{com_idx + 1}/{len(comuni)}] {comune.name} - skipping (already has data)")
+                        continue
+
                 logger.info(f"  [{com_idx + 1}/{len(comuni)}] {comune.name} ({comune.codcom} -> {istat_code})")
 
                 try:
@@ -1114,6 +1137,12 @@ def main():
         help='Enable verbose logging'
     )
 
+    parser.add_argument(
+        '--skip-loaded',
+        action='store_true',
+        help='Skip municipalities that already have data for the requested semester'
+    )
+
     args = parser.parse_args()
 
     if args.verbose:
@@ -1126,6 +1155,7 @@ def main():
             test_mode=args.test,
             skip_geometries=args.skip_geometries,
             skip_values=args.skip_values,
+            skip_loaded=args.skip_loaded,
         )
     except KeyboardInterrupt:
         logger.info("\nIngestion interrupted by user")
