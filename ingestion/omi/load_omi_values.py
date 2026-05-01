@@ -602,6 +602,7 @@ class DatabaseLoader:
         self.cursor = None
         self.ingestion_run_id: Optional[int] = None
         self._istat_cache: dict[str, Optional[str]] = {}
+        self._accent_stripped_cache: dict[str, str] = {}  # stripped_name -> municipality_id
         self._connect()
 
     def _connect(self):
@@ -654,8 +655,23 @@ class DatabaseLoader:
         normalized = name.upper().strip()
         # Replace backticks with apostrophes (OMI uses ` but ISTAT uses ')
         normalized = normalized.replace('`', "'")
-        # Also try without any quotes for fuzzy matching
         return normalized
+
+    def _strip_accents(self, name: str) -> str:
+        """Strip accents and convert OMI backtick notation to base letters for matching.
+
+        OMI uses backticks to represent accented vowels:
+        - AGLIE` = Agliè
+        - FORLI` = Forlì
+        - CITTA` = Città
+        """
+        import unicodedata
+        # First, remove trailing backticks that represent accents in OMI names
+        result = name.replace("`", "")
+        # Strip Unicode accents (è->e, ì->i, etc.)
+        result = unicodedata.normalize('NFD', result)
+        result = ''.join(c for c in result if unicodedata.category(c) != 'Mn')
+        return result.upper().strip()
 
     def find_istat_code(self, codcom: str, comune_name: str, province_code: str) -> Optional[str]:
         """Find ISTAT code for a cadastral code, using mapping table and name matching."""
@@ -707,6 +723,24 @@ class DatabaseLoader:
         if result:
             self._save_mapping(codcom, result['municipality_id'], comune_name, province_code)
             return result['municipality_id']
+
+        # Try accent-stripped matching (AGLIE` -> AGLIE, Agliè -> AGLIE)
+        stripped = self._strip_accents(comune_name)
+
+        # Build accent-stripped cache if empty
+        if not self._accent_stripped_cache:
+            self.cursor.execute("""
+                SELECT municipality_id, municipality_name FROM core.municipalities
+            """)
+            all_munis = self.cursor.fetchall()
+            for muni in all_munis:
+                db_stripped = self._strip_accents(muni['municipality_name'])
+                self._accent_stripped_cache[db_stripped] = muni['municipality_id']
+
+        if stripped in self._accent_stripped_cache:
+            muni_id = self._accent_stripped_cache[stripped]
+            self._save_mapping(codcom, muni_id, comune_name, province_code)
+            return muni_id
 
         # Not found
         self._istat_cache[codcom] = None
