@@ -648,6 +648,15 @@ class DatabaseLoader:
         result = self.cursor.fetchone()
         return result['exists'] if result else False
 
+    def _normalize_name(self, name: str) -> str:
+        """Normalize municipality name for matching - handle special characters."""
+        # Convert to uppercase
+        normalized = name.upper().strip()
+        # Replace backticks with apostrophes (OMI uses ` but ISTAT uses ')
+        normalized = normalized.replace('`', "'")
+        # Also try without any quotes for fuzzy matching
+        return normalized
+
     def find_istat_code(self, codcom: str, comune_name: str, province_code: str) -> Optional[str]:
         """Find ISTAT code for a cadastral code, using mapping table and name matching."""
         # Check cache first
@@ -666,10 +675,10 @@ class DatabaseLoader:
             self._istat_cache[codcom] = result['municipality_id']
             return result['municipality_id']
 
-        # Try name matching
-        normalized = comune_name.upper().strip()
+        # Normalize name (handle backtick vs apostrophe)
+        normalized = self._normalize_name(comune_name)
 
-        # Exact match
+        # Exact match with normalized quotes
         self.cursor.execute("""
             SELECT municipality_id FROM core.municipalities WHERE UPPER(municipality_name) = %s
         """, (normalized,))
@@ -678,8 +687,18 @@ class DatabaseLoader:
             self._save_mapping(codcom, result['municipality_id'], comune_name, province_code)
             return result['municipality_id']
 
-        # Try with province filter (province code is 2-letter abbreviation, need to map to numeric)
-        # For now, try fuzzy match
+        # Try matching without any quotes/apostrophes
+        no_quotes = normalized.replace("'", "").replace("`", "")
+        self.cursor.execute("""
+            SELECT municipality_id FROM core.municipalities
+            WHERE REPLACE(REPLACE(UPPER(municipality_name), '''', ''), '`', '') = %s
+        """, (no_quotes,))
+        result = self.cursor.fetchone()
+        if result:
+            self._save_mapping(codcom, result['municipality_id'], comune_name, province_code)
+            return result['municipality_id']
+
+        # Try prefix match with normalized name
         self.cursor.execute("""
             SELECT municipality_id FROM core.municipalities
             WHERE UPPER(municipality_name) LIKE %s LIMIT 1

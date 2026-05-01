@@ -84,26 +84,43 @@ export async function GET(request: Request) {
     }
 
     // Get municipality values for the latest period
-    const { data: martRows, error: martError } = await supabase
-      .schema("mart")
-      .from("municipality_values_semester")
-      .select("municipality_id, value_mid_eur_sqm, value_min_eur_sqm, value_max_eur_sqm")
-      .eq("period_id", latestPeriodId)
-      .eq("property_segment", segment)
-      .not("value_mid_eur_sqm", "is", null);
+    // Note: Supabase defaults to 1000 rows max, so we fetch in batches
+    const allMartRows: { municipality_id: string; value_mid_eur_sqm: number }[] = [];
+    const batchSize = 1000;
+    let offset = 0;
+    let hasMore = true;
 
-    if (martError) {
-      return NextResponse.json(
-        {
-          metric,
-          horizonMonths,
-          segment,
-          asOf: new Date().toISOString(),
-          error: martError.message,
-          features: [],
-        },
-        { status: 500 }
-      );
+    while (hasMore) {
+      const { data: batch, error: batchError } = await supabase
+        .schema("mart")
+        .from("municipality_values_semester")
+        .select("municipality_id, value_mid_eur_sqm")
+        .eq("period_id", latestPeriodId)
+        .eq("property_segment", segment)
+        .not("value_mid_eur_sqm", "is", null)
+        .range(offset, offset + batchSize - 1);
+
+      if (batchError) {
+        return NextResponse.json(
+          {
+            metric,
+            horizonMonths,
+            segment,
+            asOf: new Date().toISOString(),
+            error: batchError.message,
+            features: [],
+          },
+          { status: 500 }
+        );
+      }
+
+      if (batch && batch.length > 0) {
+        allMartRows.push(...batch);
+        offset += batchSize;
+        hasMore = batch.length === batchSize;
+      } else {
+        hasMore = false;
+      }
     }
 
     return NextResponse.json({
@@ -112,7 +129,7 @@ export async function GET(request: Request) {
       segment,
       asOf: latestPeriodId,
       source: "mart.municipality_values_semester",
-      features: (martRows ?? []).map((r) => ({
+      features: allMartRows.map((r) => ({
         municipalityId: r.municipality_id,
         value: r.value_mid_eur_sqm,
       })),
