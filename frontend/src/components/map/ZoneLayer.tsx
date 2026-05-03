@@ -75,6 +75,17 @@ export function ZoneLayer({ municipalityId, visible, metric }: ZoneLayerProps) {
   const [currentZoom, setCurrentZoom] = useState(map.getZoom());
   const [valueDomain, setValueDomain] = useState<{ min: number; max: number }>({ min: 0, max: 0 });
 
+  // Create a custom pane for zones to ensure they render above municipalities
+  useEffect(() => {
+    if (!map.getPane("zonesPane")) {
+      map.createPane("zonesPane");
+      const pane = map.getPane("zonesPane");
+      if (pane) {
+        pane.style.zIndex = "450"; // Above overlayPane (400) but below tooltips (600)
+      }
+    }
+  }, [map]);
+
   // Track zoom level
   useEffect(() => {
     const handleZoom = () => {
@@ -174,10 +185,11 @@ export function ZoneLayer({ municipalityId, visible, metric }: ZoneLayerProps) {
   // Style function for zones
   const style = useCallback(
     (feature: Feature | undefined): PathOptions => ({
-      color: "rgba(255, 255, 255, 0.6)",
+      color: "rgba(255, 255, 255, 0.8)",
       weight: 2,
       fillColor: colorFor(feature),
-      fillOpacity: 0.7,
+      fillOpacity: 0.8,
+      pane: "zonesPane", // Render above municipality layer
     }),
     [colorFor]
   );

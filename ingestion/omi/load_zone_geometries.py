@@ -132,9 +132,16 @@ def main():
     cur = conn.cursor()
     logger.info("Connected to database")
 
+    # Get ISTAT to cadastral mapping
+    cur.execute("""
+        SELECT municipality_id, codcom FROM core.cadastral_istat_mapping
+    """)
+    istat_to_cadastral = {row[0]: row[1] for row in cur.fetchall()}
+    logger.info(f"Loaded {len(istat_to_cadastral)} ISTAT to cadastral mappings")
+
     # Get existing zones that need geometry
     cur.execute("""
-        SELECT omi_zone_id, zone_code
+        SELECT omi_zone_id, zone_code, municipality_id
         FROM core.omi_zones
         WHERE geom IS NULL
     """)
@@ -145,13 +152,16 @@ def main():
     updated = 0
     not_found = 0
 
-    for omi_zone_id, zone_code in zones_needing_geom:
-        # Extract cadastral code from omi_zone_id (e.g., "H501_B1" -> "H501")
-        parts = omi_zone_id.split('_')
-        if len(parts) >= 2:
-            codcom = parts[0]
-            codzona = zone_code
+    for omi_zone_id, zone_code, municipality_id in zones_needing_geom:
+        # Look up cadastral code from ISTAT code
+        codcom = istat_to_cadastral.get(municipality_id)
+        if not codcom:
+            # Fall back to extracting from omi_zone_id (for zones with cadastral IDs)
+            parts = omi_zone_id.split('_')
+            codcom = parts[0] if len(parts) >= 2 else None
 
+        if codcom:
+            codzona = zone_code
             if (codcom, codzona) in zone_geometries:
                 geom_data = zone_geometries[(codcom, codzona)]
                 geom_json = json.dumps(geom_data['geometry'])

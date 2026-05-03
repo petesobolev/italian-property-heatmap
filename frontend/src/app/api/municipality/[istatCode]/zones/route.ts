@@ -92,17 +92,75 @@ async function processZones(
     // RPC doesn't exist, will fall back to direct query
   }
 
-  // If RPC doesn't exist, try direct query
+  // If RPC doesn't exist or returned no data, try direct queries
   let values: ZoneValueRow[] = zoneValues ?? [];
-  if (!zoneValues) {
-    const { data: directValues } = await supabase
+  if (!zoneValues || zoneValues.length === 0) {
+    // First try mart table
+    const { data: martValues } = await supabase
       .schema("mart")
       .from("omi_zone_values_semester")
       .select("omi_zone_id, period_id, value_mid_eur_sqm, value_min_eur_sqm, value_max_eur_sqm, rent_mid_eur_sqm_month, value_pct_change_1s")
       .in("omi_zone_id", zoneIds)
       .eq("property_segment", segment)
       .order("period_id", { ascending: false });
-    values = (directValues as ZoneValueRow[]) ?? [];
+
+    if (martValues && martValues.length > 0) {
+      values = martValues as ZoneValueRow[];
+    } else {
+      // Fall back to raw table and aggregate
+      const { data: rawValues } = await supabase
+        .schema("raw")
+        .from("omi_property_values")
+        .select("omi_zone_id, period_id, value_min_eur_sqm, value_max_eur_sqm, rent_min_eur_sqm_month, rent_max_eur_sqm_month")
+        .in("omi_zone_id", zoneIds)
+        .eq("property_type", "residenziale")
+        .order("period_id", { ascending: false });
+
+      if (rawValues && rawValues.length > 0) {
+        // Aggregate raw values by zone and period
+        const aggregated = new Map<string, {
+          omi_zone_id: string;
+          period_id: string;
+          values_min: number[];
+          values_max: number[];
+          rents_min: number[];
+          rents_max: number[];
+        }>();
+
+        for (const row of rawValues) {
+          const key = `${row.omi_zone_id}_${row.period_id}`;
+          if (!aggregated.has(key)) {
+            aggregated.set(key, {
+              omi_zone_id: row.omi_zone_id,
+              period_id: row.period_id,
+              values_min: [],
+              values_max: [],
+              rents_min: [],
+              rents_max: [],
+            });
+          }
+          const agg = aggregated.get(key)!;
+          if (row.value_min_eur_sqm != null) agg.values_min.push(row.value_min_eur_sqm);
+          if (row.value_max_eur_sqm != null) agg.values_max.push(row.value_max_eur_sqm);
+          if (row.rent_min_eur_sqm_month != null) agg.rents_min.push(row.rent_min_eur_sqm_month);
+          if (row.rent_max_eur_sqm_month != null) agg.rents_max.push(row.rent_max_eur_sqm_month);
+        }
+
+        values = Array.from(aggregated.values()).map((agg) => {
+          const allValues = [...agg.values_min, ...agg.values_max];
+          const allRents = [...agg.rents_min, ...agg.rents_max];
+          return {
+            omi_zone_id: agg.omi_zone_id,
+            period_id: agg.period_id,
+            value_mid_eur_sqm: allValues.length > 0 ? allValues.reduce((a, b) => a + b, 0) / allValues.length : null,
+            value_min_eur_sqm: agg.values_min.length > 0 ? Math.min(...agg.values_min) : null,
+            value_max_eur_sqm: agg.values_max.length > 0 ? Math.max(...agg.values_max) : null,
+            rent_mid_eur_sqm_month: allRents.length > 0 ? allRents.reduce((a, b) => a + b, 0) / allRents.length : null,
+            value_pct_change_1s: null, // Not calculated here
+          };
+        });
+      }
+    }
   }
 
   // Create a map of omi_zone_id to latest values

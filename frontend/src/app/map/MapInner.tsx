@@ -1,17 +1,18 @@
 "use client";
 
 import "leaflet/dist/leaflet.css";
-import { useEffect, useMemo, useState, useCallback } from "react";
+import { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import { useSearchParams } from "next/navigation";
 import type { GeoJsonObject, FeatureCollection, Feature } from "geojson";
 import { GeoJSON, MapContainer, TileLayer, useMap, ZoomControl } from "react-leaflet";
-import type { Layer, LeafletMouseEvent } from "leaflet";
+import type { Layer, LeafletMouseEvent, LatLngBounds } from "leaflet";
 import {
   FiltersSidebar,
   MunicipalityDrawer,
   MapLegend,
   CompareBar,
   ZoneLayer,
+  RegionBoundaries,
   type FiltersState,
   type MetricType,
   type MunicipalityData,
@@ -96,7 +97,8 @@ const COLOR_SCALES: Record<MetricType, { stops: number[][]; noData: string }> = 
 };
 
 // Dark map tiles for premium feel
-const DARK_TILES = "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png";
+const DARK_TILES = "https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}{r}.png";
+const DARK_LABELS = "https://{s}.basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}{r}.png";
 const DARK_ATTRIBUTION =
   '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>';
 
@@ -105,9 +107,10 @@ interface MapControllerProps {
   zoom?: number;
   onZoomChange?: (zoom: number) => void;
   onCenterChange?: (center: [number, number]) => void;
+  onBoundsChange?: (bounds: LatLngBounds) => void;
 }
 
-function MapController({ center, zoom, onZoomChange, onCenterChange }: MapControllerProps) {
+function MapController({ center, zoom, onZoomChange, onCenterChange, onBoundsChange }: MapControllerProps) {
   const map = useMap();
 
   useEffect(() => {
@@ -124,6 +127,7 @@ function MapController({ center, zoom, onZoomChange, onCenterChange }: MapContro
     const handleMove = () => {
       const c = map.getCenter();
       onCenterChange?.([c.lat, c.lng]);
+      onBoundsChange?.(map.getBounds());
     };
 
     map.on("zoomend", handleZoom);
@@ -136,7 +140,7 @@ function MapController({ center, zoom, onZoomChange, onCenterChange }: MapContro
       map.off("zoomend", handleZoom);
       map.off("moveend", handleMove);
     };
-  }, [map, onZoomChange, onCenterChange]);
+  }, [map, onZoomChange, onCenterChange, onBoundsChange]);
 
   return null;
 }
@@ -216,6 +220,7 @@ export function MapInner() {
   // Zone layer state
   const [currentZoom, setCurrentZoom] = useState(6);
   const [mapCenter, setMapCenter] = useState<[number, number]>([41.8719, 12.5674]);
+  const [mapBounds, setMapBounds] = useState<LatLngBounds | null>(null);
   const [focusedMunicipalityId, setFocusedMunicipalityId] = useState<string | null>(null);
   const [autoDetectedMunicipalityId, setAutoDetectedMunicipalityId] = useState<string | null>(null);
 
@@ -370,14 +375,73 @@ export function MapInner() {
     };
   }, [filters.metric, filters.region, filters.province, filters.propertySegment]);
 
-  // Calculate value domain
+  // Get visible municipality IDs based on current map bounds
+  const visibleMunicipalityIds = useMemo(() => {
+    if (!mapBounds || !geojson || geojson.type !== "FeatureCollection") {
+      return null; // Return null to indicate we should use all values
+    }
+
+    const fc = geojson as FeatureCollection;
+    const visibleIds = new Set<string>();
+
+    for (const feature of fc.features) {
+      const id = feature.properties?.municipality_id as string | undefined;
+      if (!id || !feature.geometry) continue;
+
+      // Check if the feature's bounding box intersects with the map bounds
+      // For simplicity, we check if the feature's centroid is within bounds
+      // or if any point of the geometry is within bounds
+      const geometry = feature.geometry;
+      let isVisible = false;
+
+      if (geometry.type === "Polygon") {
+        const coords = geometry.coordinates[0] as number[][];
+        for (const [lng, lat] of coords) {
+          if (mapBounds.contains([lat, lng])) {
+            isVisible = true;
+            break;
+          }
+        }
+      } else if (geometry.type === "MultiPolygon") {
+        outer: for (const polygon of geometry.coordinates) {
+          const coords = polygon[0] as number[][];
+          for (const [lng, lat] of coords) {
+            if (mapBounds.contains([lat, lng])) {
+              isVisible = true;
+              break outer;
+            }
+          }
+        }
+      }
+
+      if (isVisible) {
+        visibleIds.add(id);
+      }
+    }
+
+    return visibleIds.size > 0 ? visibleIds : null;
+  }, [geojson, mapBounds]);
+
+  // Calculate value domain from visible municipalities only
   const valueDomain = useMemo(() => {
-    const vals = Object.values(valuesByMunicipality)
-      .filter((v): v is number => typeof v === "number" && Number.isFinite(v))
-      .sort((a, b) => a - b);
+    let vals: number[];
+
+    if (visibleMunicipalityIds) {
+      // Filter to only visible municipalities
+      vals = Array.from(visibleMunicipalityIds)
+        .map((id) => valuesByMunicipality[id])
+        .filter((v): v is number => typeof v === "number" && Number.isFinite(v))
+        .sort((a, b) => a - b);
+    } else {
+      // Fall back to all values
+      vals = Object.values(valuesByMunicipality)
+        .filter((v): v is number => typeof v === "number" && Number.isFinite(v))
+        .sort((a, b) => a - b);
+    }
+
     if (vals.length === 0) return { min: 0, max: 0 };
     return { min: vals[0], max: vals[vals.length - 1] };
-  }, [valuesByMunicipality]);
+  }, [valuesByMunicipality, visibleMunicipalityIds]);
 
   // Color function
   const colorFor = useCallback(
@@ -471,11 +535,17 @@ export function MapInner() {
         color: "rgba(255, 255, 255, 0.2)",
         weight: 0.5,
         fillColor: colorFor(v),
-        fillOpacity: 0.85,
+        fillOpacity: 0.65,
       };
     },
     [valuesByMunicipality, colorFor, filters.showFlatTaxEligible, isFlatTaxEligible, isInEligibleRegion]
   );
+
+  // Ref to always access the current style function (avoids stale closures)
+  const styleRef = useRef(style);
+  useEffect(() => {
+    styleRef.current = style;
+  }, [style]);
 
   // Zoom change handler
   const handleZoomChange = useCallback((zoom: number) => {
@@ -492,6 +562,11 @@ export function MapInner() {
     setMapCenter(center);
   }, []);
 
+  // Bounds change handler
+  const handleBoundsChange = useCallback((bounds: LatLngBounds) => {
+    setMapBounds(bounds);
+  }, []);
+
   // Auto-detect municipality at map center when zoomed in
   useEffect(() => {
     if (currentZoom < 11 || !geojson || geojson.type !== "FeatureCollection") {
@@ -506,39 +581,75 @@ export function MapInner() {
   // Effective municipality ID for zones: manual focus takes precedence over auto-detect
   const effectiveMunicipalityId = focusedMunicipalityId || autoDetectedMunicipalityId;
 
-  // Click handler
-  const handleFeatureClick = useCallback((feature: Feature) => {
-    const props = feature.properties || {};
-    const municipalityId = props.municipality_id || "";
+  // Click handler - fetches real data from API
+  const handleFeatureClick = useCallback(
+    async (feature: Feature) => {
+      const props = feature.properties || {};
+      const municipalityId = props.municipality_id || "";
 
-    // Set focused municipality for zone display
-    setFocusedMunicipalityId(municipalityId);
+      // Set focused municipality for zone display
+      setFocusedMunicipalityId(municipalityId);
 
-    setSelectedMunicipality({
-      municipalityId,
-      name: props.name || props.municipality_id || "Unknown",
-      provinceCode: props.province_code,
-      regionCode: props.region_code,
-      coastalFlag: props.coastal_flag,
-      mountainFlag: props.mountain_flag,
-      // Mock some data - in real app this would come from API
-      valueMidEurSqm: Math.random() * 5000 + 1500,
-      valueMinEurSqm: Math.random() * 1000 + 1000,
-      valueMaxEurSqm: Math.random() * 5000 + 5000,
-      forecastAppreciationPct: (Math.random() - 0.3) * 10,
-      forecastGrossYieldPct: Math.random() * 6 + 2,
-      opportunityScore: Math.random() * 100,
-      confidenceScore: Math.random() * 100,
-      population: Math.floor(Math.random() * 100000) + 1000,
-      populationDensity: Math.random() * 500 + 50,
-      youngRatio: Math.random() * 0.2,
-      elderlyRatio: Math.random() * 0.3,
-      foreignRatio: Math.random() * 0.15,
-      ntnTotal: Math.random() * 500,
-      ntnPer1000Pop: Math.random() * 20,
-    });
-    setDrawerOpen(true);
-  }, []);
+      // Use the already-loaded value from the map layer (same as tooltip)
+      const mapValue = valuesByMunicipality[municipalityId];
+
+      // Set initial data from feature properties and map layer value
+      setSelectedMunicipality({
+        municipalityId,
+        name: props.name || props.municipality_id || "Unknown",
+        provinceCode: props.province_code,
+        regionCode: props.region_code,
+        coastalFlag: props.coastal_flag,
+        mountainFlag: props.mountain_flag,
+        valueMidEurSqm: typeof mapValue === "number" ? mapValue : undefined,
+      });
+      setDrawerOpen(true);
+
+      // Fetch full details from API
+      try {
+        const res = await fetch(
+          `/api/municipality/${municipalityId}?segment=${filters.propertySegment}`,
+          { cache: "no-store" }
+        );
+        if (!res.ok) return;
+
+        const data = await res.json();
+
+        // Update with full data from API
+        setSelectedMunicipality({
+          municipalityId,
+          name: data.municipality?.name || props.name || municipalityId,
+          provinceCode: data.municipality?.provinceCode,
+          provinceName: data.municipality?.provinceName,
+          regionCode: data.municipality?.regionCode,
+          regionName: data.municipality?.regionName,
+          coastalFlag: data.municipality?.isCoastal,
+          mountainFlag: data.municipality?.isMountain,
+          // Values from historical data (latest semester)
+          valueMidEurSqm: data.historicalValues?.[0]?.valueMidEurSqm ?? mapValue,
+          valueMinEurSqm: data.historicalValues?.[0]?.valueMinEurSqm,
+          valueMaxEurSqm: data.historicalValues?.[0]?.valueMaxEurSqm,
+          // Forecasts
+          forecastAppreciationPct: data.forecast?.appreciationPct,
+          forecastGrossYieldPct: data.forecast?.grossYieldPct,
+          opportunityScore: data.forecast?.opportunityScore,
+          confidenceScore: data.forecast?.confidenceScore,
+          // Demographics
+          population: data.demographics?.totalPopulation,
+          populationDensity: data.demographics?.populationDensity,
+          youngRatio: data.demographics?.youngRatio,
+          elderlyRatio: data.demographics?.elderlyRatio,
+          foreignRatio: data.demographics?.foreignRatio,
+          // Transactions (latest semester)
+          ntnTotal: data.historicalTransactions?.[0]?.ntnTotal,
+          ntnPer1000Pop: data.historicalTransactions?.[0]?.ntnPer1000Pop,
+        });
+      } catch (e) {
+        console.error("Failed to fetch municipality details:", e);
+      }
+    },
+    [valuesByMunicipality, filters.propertySegment]
+  );
 
   // Event handlers for each feature
   const onEachFeature = useCallback(
@@ -573,12 +684,21 @@ export function MapInner() {
           target.setStyle({
             weight: 2,
             color: "rgba(232, 196, 160, 0.8)",
-            fillOpacity: 1,
+            fillOpacity: 0.8,
           });
+          target.bringToFront();
         },
         mouseout: (e: LeafletMouseEvent) => {
           const target = e.target;
-          target.setStyle(style(feature));
+          // Use styleRef to get current style (valueDomain may have changed since mount)
+          const currentStyle = styleRef.current(feature);
+          target.setStyle({
+            weight: currentStyle.weight,
+            color: currentStyle.color,
+            fillColor: currentStyle.fillColor,
+            fillOpacity: currentStyle.fillOpacity,
+          });
+          target.closeTooltip();
         },
       });
     },
@@ -621,6 +741,8 @@ export function MapInner() {
             onEachFeature={onEachFeature}
           />
         )}
+        {/* Region boundaries for visual clarity */}
+        <RegionBoundaries />
         {filters.metric !== "vehicle_arson_rate" && (
           <ZoneLayer
             municipalityId={effectiveMunicipalityId}
@@ -628,7 +750,9 @@ export function MapInner() {
             metric={filters.metric}
           />
         )}
-        <MapController onZoomChange={handleZoomChange} onCenterChange={handleCenterChange} />
+        {/* Labels layer on top of polygons for readability */}
+        <TileLayer url={DARK_LABELS} pane="shadowPane" />
+        <MapController onZoomChange={handleZoomChange} onCenterChange={handleCenterChange} onBoundsChange={handleBoundsChange} />
       </MapContainer>
 
       {/* Legend */}

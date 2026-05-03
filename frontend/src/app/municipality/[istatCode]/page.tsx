@@ -584,6 +584,12 @@ export default function MunicipalityDetailPage({
 
   const { municipality: m, forecast: f, historicalValues, historicalTransactions, demographics: d, neighbors } = data;
 
+  // Get current value - prefer forecast, fall back to latest historical
+  const latestHistorical = historicalValues[0];
+  const currentValue = f?.valueMidEurSqm ?? latestHistorical?.valueMidEurSqm ?? null;
+  const valueMin = latestHistorical?.valueMinEurSqm ?? null;
+  const valueMax = latestHistorical?.valueMaxEurSqm ?? null;
+
   // Prepare chart data (reverse to show oldest first)
   const priceHistory = [...historicalValues]
     .reverse()
@@ -663,7 +669,7 @@ export default function MunicipalityDetailPage({
             <div className="value-card value-card--primary">
               <span className="value-card__label">Current Value</span>
               <span className="value-card__value">
-                {formatCurrency(f?.valueMidEurSqm)}<span className="value-card__unit">/m²</span>
+                {formatCurrency(currentValue)}<span className="value-card__unit">/m²</span>
               </span>
               {data.derived.priceTrend && (
                 <span className={`value-card__trend value-card__trend--${data.derived.priceTrend}`}>
@@ -673,10 +679,18 @@ export default function MunicipalityDetailPage({
               )}
             </div>
             <div className="value-card">
-              <span className="value-card__label">Projected (12M)</span>
+              <span className="value-card__label">Value Range</span>
               <span className="value-card__value">
-                {formatCurrency(data.derived.projectedValue)}<span className="value-card__unit">/m²</span>
+                {valueMin != null && valueMax != null
+                  ? `${formatCurrency(valueMin)} – ${formatCurrency(valueMax)}`
+                  : formatCurrency(data.derived.projectedValue)}
+                <span className="value-card__unit">/m²</span>
               </span>
+              {f?.appreciationPct != null && (
+                <span className="value-card__sub">
+                  12M forecast: {formatPercent(f.appreciationPct)}
+                </span>
+              )}
             </div>
             <div className="chart-card">
               <span className="chart-card__title">Price History</span>
@@ -1419,6 +1433,11 @@ export default function MunicipalityDetailPage({
         .value-card__trend--up { color: #4ade80; }
         .value-card__trend--down { color: #f87171; }
         .value-card__trend--stable { color: #8b9bb4; }
+
+        .value-card__sub {
+          font-size: 0.8rem;
+          color: #6b7a90;
+        }
 
         .chart-card {
           padding: 24px;
