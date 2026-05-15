@@ -53,6 +53,11 @@ function formatPercent(value: number | undefined | null): string {
   return `${sign}${value.toFixed(1)}%`;
 }
 
+function formatYield(value: number | undefined | null): string {
+  if (value == null) return "—";
+  return `${value.toFixed(1)}%`;
+}
+
 function formatCurrency(value: number | undefined | null): string {
   if (value == null) return "—";
   return `€${formatNumber(value)}`;
@@ -345,7 +350,7 @@ export function MunicipalityDrawer({
                   />
                   <StatCard
                     label="Gross Yield"
-                    value={formatPercent(m.forecastGrossYieldPct)}
+                    value={formatYield(m.forecastGrossYieldPct)}
                     subValue="annual rental"
                     icon="%"
                   />

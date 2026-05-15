@@ -360,6 +360,9 @@ export function MapInner() {
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const mapRef = useRef<L.Map | null>(null);
 
+  // Track active tooltip layer to prevent ghost tooltips
+  const activeTooltipLayerRef = useRef<Layer | null>(null);
+
   const handleAddToCompare = useCallback((municipality: MunicipalityData) => {
     setCompareList((prev) => {
       // Don't add if already in list or at max capacity
@@ -706,6 +709,14 @@ export function MapInner() {
     styleRef.current = style;
   }, [style]);
 
+  // Clean up active tooltip ref when GeoJSON data changes to prevent ghost tooltips
+  useEffect(() => {
+    if (activeTooltipLayerRef.current) {
+      activeTooltipLayerRef.current.closeTooltip();
+      activeTooltipLayerRef.current = null;
+    }
+  }, [geojson, valuesByMunicipality]);
+
   // Zoom change handler
   const handleZoomChange = useCallback((zoom: number) => {
     setCurrentZoom(zoom);
@@ -859,36 +870,50 @@ export function MapInner() {
       }
 
       layer.bindTooltip(label, {
-        sticky: true,
+        sticky: false,
+        permanent: false,
+        direction: "top",
+        offset: [0, -10],
         className: "map-tooltip",
       });
 
       layer.on({
         click: () => handleFeatureClick(feature),
         mouseover: (e: LeafletMouseEvent) => {
-          const target = e.target;
-          target.setStyle({
+          const target = e.target as Layer;
+          // Close any previously active tooltip to prevent ghosts
+          if (activeTooltipLayerRef.current && activeTooltipLayerRef.current !== target) {
+            activeTooltipLayerRef.current.closeTooltip();
+          }
+          activeTooltipLayerRef.current = target;
+
+          (target as L.Path).setStyle({
             weight: 2,
             color: "rgba(232, 196, 160, 0.8)",
             fillOpacity: 0.8,
           });
-          target.bringToFront();
+          (target as L.Path).bringToFront();
+          target.openTooltip();
         },
         mouseout: (e: LeafletMouseEvent) => {
-          const target = e.target;
+          const target = e.target as Layer;
           // Use styleRef to get current style (valueDomain may have changed since mount)
           const currentStyle = styleRef.current(feature);
-          target.setStyle({
+          (target as L.Path).setStyle({
             weight: currentStyle.weight,
             color: currentStyle.color,
             fillColor: currentStyle.fillColor,
             fillOpacity: currentStyle.fillOpacity,
           });
           target.closeTooltip();
+          // Clear active ref if this was the active layer
+          if (activeTooltipLayerRef.current === target) {
+            activeTooltipLayerRef.current = null;
+          }
         },
       });
     },
-    [valuesByMunicipality, style, handleFeatureClick, filters.showFlatTaxEligible, filters.metric, isFlatTaxEligible, formatTooltipValue]
+    [valuesByMunicipality, handleFeatureClick, filters.showFlatTaxEligible, filters.metric, isFlatTaxEligible, formatTooltipValue]
   );
 
   const featureCount = useMemo(() => {

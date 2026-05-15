@@ -344,9 +344,48 @@ export async function GET(request: Request, { params }: RouteParams) {
     .eq("municipality_id", istatCode)
     .single();
 
-  // 11. Calculate some derived metrics
-  const currentValue = latestForecast?.value_mid_eur_sqm ?? null;
-  const appreciation = latestForecast?.forecast_appreciation_pct ?? null;
+  // 11. Calculate derived metrics and fallback forecasts
+
+  // Get current values from historical data if forecast doesn't have them
+  const latestHistorical = historicalValues?.[0];
+  const currentValue = latestForecast?.value_mid_eur_sqm ?? latestHistorical?.value_mid_eur_sqm ?? null;
+  const currentRent = latestHistorical?.rent_mid_eur_sqm_month ?? null;
+
+  // Calculate gross yield from rent/value if not in forecast
+  // Formula: (monthly_rent * 12) / purchase_price * 100
+  let calculatedGrossYield: number | null = null;
+  if (currentRent && currentValue && currentValue > 0) {
+    calculatedGrossYield = (currentRent * 12) / currentValue * 100;
+  }
+
+  // Calculate appreciation forecast from historical trend
+  // Use average of semester-over-semester changes, annualized (x2 for yearly)
+  let calculatedAppreciation: number | null = null;
+  if (historicalValues && historicalValues.length >= 2) {
+    // Collect valid semester changes
+    const semesterChanges: number[] = [];
+    for (let i = 0; i < Math.min(historicalValues.length - 1, 4); i++) {
+      const current = historicalValues[i]?.value_mid_eur_sqm;
+      const previous = historicalValues[i + 1]?.value_mid_eur_sqm;
+      if (current && previous && previous > 0) {
+        const change = ((current - previous) / previous) * 100;
+        semesterChanges.push(change);
+      }
+    }
+
+    if (semesterChanges.length > 0) {
+      // Average semester change, then annualize (x2)
+      const avgSemesterChange = semesterChanges.reduce((a, b) => a + b, 0) / semesterChanges.length;
+      calculatedAppreciation = avgSemesterChange * 2; // Annualized
+
+      // Clamp to reasonable range (-30% to +30%)
+      calculatedAppreciation = Math.max(-30, Math.min(30, calculatedAppreciation));
+    }
+  }
+
+  const appreciation = latestForecast?.forecast_appreciation_pct ?? calculatedAppreciation;
+  const grossYield = latestForecast?.forecast_gross_yield_pct ?? calculatedGrossYield;
+
   const projectedValue =
     currentValue && appreciation
       ? currentValue * (1 + appreciation / 100)
@@ -365,6 +404,94 @@ export async function GET(request: Request, { params }: RouteParams) {
     }
   }
 
+  // Calculate confidence score based on data availability
+  let calculatedConfidence: number | null = null;
+  if (historicalValues && historicalValues.length > 0) {
+    // Base confidence on: data recency, number of periods, and zones with data
+    const periodsAvailable = historicalValues.length;
+    const zonesWithData = latestHistorical?.zones_with_data ?? 1;
+    const hasRentData = currentRent !== null;
+
+    // Simple confidence formula:
+    // - 40 points base if we have any data
+    // - Up to 30 points for number of historical periods (max at 6+)
+    // - Up to 20 points for zones with data (max at 10+)
+    // - 10 points bonus if we have rent data
+    const periodScore = Math.min(periodsAvailable / 6, 1) * 30;
+    const zoneScore = Math.min(zonesWithData / 10, 1) * 20;
+    const rentBonus = hasRentData ? 10 : 0;
+
+    calculatedConfidence = 40 + periodScore + zoneScore + rentBonus;
+  }
+
+  // Calculate opportunity score (0-100) based on investment attractiveness
+  let calculatedOpportunityScore: number | null = null;
+  if (historicalValues && historicalValues.length > 0 && currentValue) {
+    const zonesWithData = latestHistorical?.zones_with_data ?? 1;
+    const valueMin = latestHistorical?.value_min_eur_sqm;
+    const valueMax = latestHistorical?.value_max_eur_sqm;
+
+    // 1. Yield Component (0-35 points)
+    // Italian average yield is ~4-5%, excellent is 6%+
+    // Score: yield * 5, capped at 35
+    const yieldScore = grossYield
+      ? Math.min(35, grossYield * 5)
+      : 0;
+
+    // 2. Appreciation Trend Component (0-25 points)
+    // Positive appreciation is good, but not too high (overheating)
+    // Best range: 2-8% annual appreciation
+    // Score: peaks at 5% appreciation = 25 points
+    let appreciationScore = 0;
+    if (appreciation !== null) {
+      if (appreciation >= 0 && appreciation <= 10) {
+        // Positive appreciation: score peaks at 5%
+        appreciationScore = 25 - Math.abs(appreciation - 5) * 3;
+      } else if (appreciation < 0 && appreciation >= -5) {
+        // Slight decline: partial credit
+        appreciationScore = Math.max(0, 10 + appreciation * 2);
+      }
+      // Very negative or very high appreciation gets 0
+      appreciationScore = Math.max(0, appreciationScore);
+    }
+
+    // 3. Affordability Component (0-20 points)
+    // Lower prices = more accessible entry point
+    // Italian average is ~1500-2000 €/m²
+    // Score: inversely proportional to price, capped
+    let affordabilityScore = 0;
+    if (currentValue < 1000) {
+      affordabilityScore = 20; // Very affordable
+    } else if (currentValue < 2000) {
+      affordabilityScore = 20 - (currentValue - 1000) / 100; // 20 to 10
+    } else if (currentValue < 4000) {
+      affordabilityScore = 10 - (currentValue - 2000) / 400; // 10 to 5
+    } else {
+      affordabilityScore = Math.max(0, 5 - (currentValue - 4000) / 2000); // 5 to 0
+    }
+
+    // 4. Price Stability Component (0-10 points)
+    // Lower variance (max-min)/mid = more predictable market
+    let stabilityScore = 10;
+    if (valueMin && valueMax && currentValue > 0) {
+      const spreadRatio = (valueMax - valueMin) / currentValue;
+      // Typical spread is 0.3-0.8, lower is better
+      stabilityScore = Math.max(0, 10 - spreadRatio * 10);
+    }
+
+    // 5. Data Quality Component (0-10 points)
+    // More zones with data = more reliable assessment
+    const dataQualityScore = Math.min(10, zonesWithData / 3);
+
+    // Total opportunity score
+    calculatedOpportunityScore = Math.round(
+      yieldScore + appreciationScore + affordabilityScore + stabilityScore + dataQualityScore
+    );
+
+    // Clamp to 0-100
+    calculatedOpportunityScore = Math.max(0, Math.min(100, calculatedOpportunityScore));
+  }
+
   return NextResponse.json({
     municipality: {
       id: municipalityData.municipality_id,
@@ -377,21 +504,21 @@ export async function GET(request: Request, { params }: RouteParams) {
       isMountain: municipalityData.mountain_flag ?? false,
       areaSqKm: municipalityData.area_sqkm,
     },
-    forecast: latestForecast
-      ? {
-          date: latestForecast.forecast_date,
-          horizonMonths: latestForecast.horizon_months,
-          valueMidEurSqm: latestForecast.value_mid_eur_sqm,
-          appreciationPct: latestForecast.forecast_appreciation_pct,
-          projectedValueEurSqm: projectedValue,
-          grossYieldPct: latestForecast.forecast_gross_yield_pct,
-          opportunityScore: latestForecast.opportunity_score,
-          confidenceScore: latestForecast.confidence_score,
-          drivers: latestForecast.drivers,
-          risks: latestForecast.risks,
-          modelVersion: latestForecast.model_version,
-        }
-      : null,
+    forecast: {
+      date: latestForecast?.forecast_date ?? latestHistorical?.period_id ?? null,
+      horizonMonths: latestForecast?.horizon_months ?? horizonMonths,
+      valueMidEurSqm: currentValue,
+      appreciationPct: appreciation,
+      projectedValueEurSqm: projectedValue,
+      grossYieldPct: grossYield,
+      opportunityScore: latestForecast?.opportunity_score ?? calculatedOpportunityScore,
+      confidenceScore: latestForecast?.confidence_score ?? calculatedConfidence,
+      drivers: latestForecast?.drivers ?? null,
+      risks: latestForecast?.risks ?? null,
+      modelVersion: latestForecast?.model_version ?? (calculatedAppreciation !== null ? "historical-trend-v1" : null),
+      // Flag to indicate if this is a calculated vs model forecast
+      isCalculated: latestForecast === null && (calculatedAppreciation !== null || calculatedGrossYield !== null),
+    },
     historicalValues: (historicalValues ?? []).map((v) => ({
       periodId: v.period_id,
       valueMidEurSqm: v.value_mid_eur_sqm,
