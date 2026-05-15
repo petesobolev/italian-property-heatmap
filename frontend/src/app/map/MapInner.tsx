@@ -5,6 +5,7 @@ import { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import { useSearchParams } from "next/navigation";
 import type { GeoJsonObject, FeatureCollection, Feature } from "geojson";
 import { GeoJSON, MapContainer, TileLayer, useMap, ZoomControl } from "react-leaflet";
+import L from "leaflet";
 import type { Layer, LeafletMouseEvent, LatLngBounds } from "leaflet";
 import {
   FiltersSidebar,
@@ -17,6 +18,7 @@ import {
   type MetricType,
   type MunicipalityData,
 } from "@/components/map";
+import { CommandPalette } from "@/components/map/CommandPalette";
 
 // Southern Italian regions eligible for 7% flat tax regime
 // Regions: Sicilia (19), Calabria (18), Sardegna (20), Puglia (16),
@@ -41,6 +43,46 @@ const COLOR_SCALES: Record<MetricType, { stops: number[][]; noData: string }> = 
       [74, 144, 181],
       [124, 196, 212],
       [184, 224, 236],
+    ],
+    noData: "#2a2d35",
+  },
+  rent_mid_eur_sqm_month: {
+    stops: [
+      [240, 249, 232],  // Light green (low rent)
+      [186, 228, 188],
+      [123, 204, 196],
+      [67, 162, 202],
+      [8, 104, 172],    // Deep blue (high rent)
+    ],
+    noData: "#2a2d35",
+  },
+  gross_yield_pct: {
+    stops: [
+      [254, 240, 217],  // Cream (low yield)
+      [253, 204, 138],
+      [252, 141, 89],
+      [227, 74, 51],
+      [179, 0, 0],      // Deep red (high yield)
+    ],
+    noData: "#2a2d35",
+  },
+  condition_premium_pct: {
+    stops: [
+      [69, 117, 180],   // Blue (low/negative premium - renovation opportunity)
+      [145, 191, 219],
+      [247, 247, 247],  // Neutral white
+      [253, 174, 97],
+      [215, 48, 39],    // Red (high premium)
+    ],
+    noData: "#2a2d35",
+  },
+  price_variance_pct: {
+    stops: [
+      [26, 152, 80],    // Green (low variance - stable pricing)
+      [145, 207, 96],
+      [255, 255, 191],  // Yellow (moderate)
+      [252, 141, 89],
+      [215, 48, 39],    // Red (high variance - uncertain)
     ],
     noData: "#2a2d35",
   },
@@ -145,6 +187,87 @@ function MapController({ center, zoom, onZoomChange, onCenterChange, onBoundsCha
   return null;
 }
 
+// Component to capture map ref for programmatic control
+function MapRefCapture({ mapRef }: { mapRef: React.MutableRefObject<L.Map | null> }) {
+  const map = useMap();
+  useEffect(() => {
+    mapRef.current = map;
+  }, [map, mapRef]);
+  return null;
+}
+
+// Component to handle initial focus on a specific municipality from URL
+interface FocusHandlerProps {
+  municipalityId: string | null;
+  geojson: FeatureCollection | null;
+  onFocused: (municipalityId: string) => void;
+  shouldFocus: boolean;
+  onFocusComplete: (municipalityId: string) => void;
+}
+
+function FocusHandler({ municipalityId, geojson, onFocused, shouldFocus, onFocusComplete }: FocusHandlerProps) {
+  const map = useMap();
+
+  useEffect(() => {
+    if (!municipalityId || !geojson || !shouldFocus) return;
+
+    // Find the feature for this municipality
+    const feature = geojson.features.find(
+      (f) => f.properties?.municipality_id === municipalityId
+    );
+
+    if (!feature || !feature.geometry) {
+      onFocusComplete(municipalityId); // Mark as complete even if not found to prevent retrying
+      return;
+    }
+
+    // Calculate bounds from geometry
+    const coords: number[][] = [];
+    const geometry = feature.geometry;
+
+    if (geometry.type === "Polygon") {
+      coords.push(...(geometry.coordinates[0] as number[][]));
+    } else if (geometry.type === "MultiPolygon") {
+      for (const polygon of geometry.coordinates) {
+        coords.push(...(polygon[0] as number[][]));
+      }
+    }
+
+    if (coords.length === 0) {
+      onFocusComplete(municipalityId);
+      return;
+    }
+
+    // Calculate bounds (coords are [lng, lat])
+    let minLng = Infinity, maxLng = -Infinity, minLat = Infinity, maxLat = -Infinity;
+    for (const [lng, lat] of coords) {
+      if (lng < minLng) minLng = lng;
+      if (lng > maxLng) maxLng = lng;
+      if (lat < minLat) minLat = lat;
+      if (lat > maxLat) maxLat = lat;
+    }
+
+    // Create Leaflet bounds (uses [lat, lng] order)
+    const bounds = L.latLngBounds(
+      [minLat, minLng],
+      [maxLat, maxLng]
+    );
+
+    // Fly to the bounds with padding
+    map.flyToBounds(bounds, {
+      padding: [50, 50],
+      duration: 0.8,
+      maxZoom: 12,
+    });
+
+    // Set the focused municipality
+    onFocused(municipalityId);
+    onFocusComplete(municipalityId);
+  }, [municipalityId, geojson, map, onFocused, shouldFocus, onFocusComplete]);
+
+  return null;
+}
+
 // Check if a point is inside a polygon using ray casting algorithm
 // Point-in-polygon using ray casting algorithm
 // Uses x/y coordinates (GeoJSON order: [lng, lat] = [x, y])
@@ -202,9 +325,10 @@ function findMunicipalityAtPoint(
 }
 
 export function MapInner() {
-  // URL parameters for hidden features
+  // URL parameters for hidden features and focus
   const searchParams = useSearchParams();
   const showHiddenMetrics = searchParams.get("arson") === "true";
+  const focusParam = searchParams.get("focus");
 
   // State
   const [geojson, setGeojson] = useState<GeoJsonObject | null>(null);
@@ -213,6 +337,7 @@ export function MapInner() {
   >({});
   const [loading, setLoading] = useState(true);
   const [dataSource, setDataSource] = useState<"real" | "demo" | null>(null);
+  const [availablePeriodsCount, setAvailablePeriodsCount] = useState(4); // Default to 4, will be updated from API
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [selectedMunicipality, setSelectedMunicipality] = useState<MunicipalityData | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -223,9 +348,17 @@ export function MapInner() {
   const [mapBounds, setMapBounds] = useState<LatLngBounds | null>(null);
   const [focusedMunicipalityId, setFocusedMunicipalityId] = useState<string | null>(null);
   const [autoDetectedMunicipalityId, setAutoDetectedMunicipalityId] = useState<string | null>(null);
+  const [lastFocusedParam, setLastFocusedParam] = useState<string | null>(null);
+
+  // Track if we need to focus (when focusParam exists and differs from last focused)
+  const shouldFocus = focusParam !== null && focusParam !== lastFocusedParam;
 
   // Compare state
   const [compareList, setCompareList] = useState<MunicipalityData[]>([]);
+
+  // Command palette state
+  const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
+  const mapRef = useRef<L.Map | null>(null);
 
   const handleAddToCompare = useCallback((municipality: MunicipalityData) => {
     setCompareList((prev) => {
@@ -261,6 +394,7 @@ export function MapInner() {
     confidenceThreshold: 0,
     propertySegment: "residential",
     showFlatTaxEligible: false,
+    semestersToAverage: 1,
   });
 
   // Mock regions/provinces for UI (will be populated from API later)
@@ -295,6 +429,31 @@ export function MapInner() {
     { code: "063", name: "Napoli", regionCode: "15" },
   ]);
 
+  // Command palette keyboard shortcut (⌘K / Ctrl+K)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key === "k") {
+        e.preventDefault();
+        setCommandPaletteOpen(true);
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, []);
+
+  // Handle zoom to location bounds from command palette
+  const handleZoomToBounds = useCallback((bounds: [[number, number], [number, number]]) => {
+    if (mapRef.current) {
+      const leafletBounds = L.latLngBounds(bounds[0], bounds[1]);
+      mapRef.current.flyToBounds(leafletBounds, {
+        padding: [50, 50],
+        duration: 0.8,
+        maxZoom: 12,
+      });
+    }
+  }, []);
+
   // Load data
   useEffect(() => {
     let cancelled = false;
@@ -305,9 +464,7 @@ export function MapInner() {
         if (filters.region) params.set("region", filters.region);
         if (filters.province) params.set("province", filters.province);
 
-        const realRes = await fetch(`/api/map/geojson?${params}`, {
-          cache: "no-store",
-        });
+        const realRes = await fetch(`/api/map/geojson?${params}`);
 
         if (realRes.ok) {
           const data = (await realRes.json()) as FeatureCollection;
@@ -325,9 +482,7 @@ export function MapInner() {
         console.warn("Failed to load real geometries, falling back to demo:", e);
       }
 
-      const demoRes = await fetch("/demo/municipalities.geojson", {
-        cache: "no-store",
-      });
+      const demoRes = await fetch("/demo/municipalities.geojson");
       if (!demoRes.ok) throw new Error("Failed to load demo geojson");
       if (!cancelled) setDataSource("demo");
       return (await demoRes.json()) as GeoJsonObject;
@@ -339,8 +494,7 @@ export function MapInner() {
       const [geo, valuesRes] = await Promise.all([
         loadGeoJSON(),
         fetch(
-          `/api/map/layer?metric=${filters.metric}&horizonMonths=12&segment=${filters.propertySegment}`,
-          { cache: "no-store" }
+          `/api/map/layer?metric=${filters.metric}&horizonMonths=12&segment=${filters.propertySegment}&semesters=${filters.semestersToAverage}`
         ),
       ]);
 
@@ -348,6 +502,7 @@ export function MapInner() {
 
       const layer = (await valuesRes.json()) as {
         features?: { municipalityId: string; value: number | null }[];
+        availablePeriodsCount?: number;
       };
 
       if (cancelled) return;
@@ -358,6 +513,10 @@ export function MapInner() {
           (layer.features ?? []).map((f) => [f.municipalityId, f.value])
         )
       );
+      // Update available periods count if provided
+      if (layer.availablePeriodsCount !== undefined) {
+        setAvailablePeriodsCount(layer.availablePeriodsCount);
+      }
       setLoading(false);
     }
 
@@ -373,7 +532,7 @@ export function MapInner() {
     return () => {
       cancelled = true;
     };
-  }, [filters.metric, filters.region, filters.province, filters.propertySegment]);
+  }, [filters.metric, filters.region, filters.province, filters.propertySegment, filters.semestersToAverage]);
 
   // Get visible municipality IDs based on current map bounds
   const visibleMunicipalityIds = useMemo(() => {
@@ -608,8 +767,7 @@ export function MapInner() {
       // Fetch full details from API
       try {
         const res = await fetch(
-          `/api/municipality/${municipalityId}?segment=${filters.propertySegment}`,
-          { cache: "no-store" }
+          `/api/municipality/${municipalityId}?segment=${filters.propertySegment}`
         );
         if (!res.ok) return;
 
@@ -651,6 +809,34 @@ export function MapInner() {
     [valuesByMunicipality, filters.propertySegment]
   );
 
+  // Metric-specific tooltip formatting
+  const formatTooltipValue = useCallback((value: number, metric: MetricType): string => {
+    switch (metric) {
+      case "value_mid_eur_sqm":
+        return `€${Math.round(value).toLocaleString()}/m²`;
+      case "rent_mid_eur_sqm_month":
+        return `€${value.toFixed(1)}/m²/mo`;
+      case "gross_yield_pct":
+        return `${value.toFixed(1)}% yield`;
+      case "condition_premium_pct":
+        return `${value > 0 ? "+" : ""}${value.toFixed(0)}% premium`;
+      case "price_variance_pct":
+        return `${value.toFixed(0)}% variance`;
+      case "forecast_appreciation_pct":
+        return `${value > 0 ? "+" : ""}${value.toFixed(1)}%`;
+      case "forecast_gross_yield_pct":
+        return `${value.toFixed(1)}% yield`;
+      case "opportunity_score":
+        return `${Math.round(value)} pts`;
+      case "confidence_score":
+        return `${Math.round(value)}% confidence`;
+      case "vehicle_arson_rate":
+        return `${value.toFixed(1)} per 100k`;
+      default:
+        return value.toLocaleString();
+    }
+  }, []);
+
   // Event handlers for each feature
   const onEachFeature = useCallback(
     (feature: Feature, layer: Layer) => {
@@ -668,7 +854,7 @@ export function MapInner() {
       } else {
         label =
           typeof v === "number"
-            ? `${name}: €${Math.round(v).toLocaleString()}/m²`
+            ? `${name}: ${formatTooltipValue(v, filters.metric)}`
             : `${name}: no data`;
       }
 
@@ -702,7 +888,7 @@ export function MapInner() {
         },
       });
     },
-    [valuesByMunicipality, style, handleFeatureClick, filters.showFlatTaxEligible, isFlatTaxEligible]
+    [valuesByMunicipality, style, handleFeatureClick, filters.showFlatTaxEligible, filters.metric, isFlatTaxEligible, formatTooltipValue]
   );
 
   const featureCount = useMemo(() => {
@@ -721,6 +907,7 @@ export function MapInner() {
         isCollapsed={sidebarCollapsed}
         onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
         showHiddenMetrics={showHiddenMetrics}
+        availablePeriodsCount={availablePeriodsCount}
       />
 
       {/* Map */}
@@ -735,7 +922,7 @@ export function MapInner() {
         <TileLayer attribution={DARK_ATTRIBUTION} url={DARK_TILES} />
         {geojson && (
           <GeoJSON
-            key={`${filters.metric}-${filters.propertySegment}-${filters.showFlatTaxEligible}-${filters.region || 'all'}-${filters.province || 'all'}`}
+            key={`${filters.metric}-${filters.propertySegment}-${filters.showFlatTaxEligible}-${filters.region || 'all'}-${filters.province || 'all'}-${filters.semestersToAverage}-${Object.keys(valuesByMunicipality).length}`}
             data={geojson}
             style={style}
             onEachFeature={onEachFeature}
@@ -753,6 +940,14 @@ export function MapInner() {
         {/* Labels layer on top of polygons for readability */}
         <TileLayer url={DARK_LABELS} pane="shadowPane" />
         <MapController onZoomChange={handleZoomChange} onCenterChange={handleCenterChange} onBoundsChange={handleBoundsChange} />
+        <MapRefCapture mapRef={mapRef} />
+        <FocusHandler
+          municipalityId={focusParam}
+          geojson={geojson as FeatureCollection | null}
+          onFocused={setFocusedMunicipalityId}
+          shouldFocus={shouldFocus}
+          onFocusComplete={setLastFocusedParam}
+        />
       </MapContainer>
 
       {/* Legend */}
@@ -778,6 +973,20 @@ export function MapInner() {
           </>
         )}
       </div>
+
+      {/* Search button */}
+      <button
+        className="search-button"
+        onClick={() => setCommandPaletteOpen(true)}
+        aria-label="Search locations"
+      >
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+          <circle cx="11" cy="11" r="8" />
+          <path d="m21 21-4.35-4.35" />
+        </svg>
+        <span className="search-button__text">Search</span>
+        <kbd className="search-button__kbd">⌘K</kbd>
+      </button>
 
       {/* Zone indicator */}
       {effectiveMunicipalityId && currentZoom >= 11 && filters.metric !== "vehicle_arson_rate" && (
@@ -812,6 +1021,13 @@ export function MapInner() {
         municipalities={compareList}
         onRemove={handleRemoveFromCompare}
         onClear={handleClearCompare}
+      />
+
+      {/* Command Palette */}
+      <CommandPalette
+        isOpen={commandPaletteOpen}
+        onClose={() => setCommandPaletteOpen(false)}
+        onSelectLocation={handleZoomToBounds}
       />
 
       <style jsx global>{`
@@ -922,6 +1138,51 @@ export function MapInner() {
         .data-badge__text {
           font-weight: 500;
           letter-spacing: 0.02em;
+        }
+
+        .search-button {
+          position: absolute;
+          top: 16px;
+          left: 50%;
+          transform: translateX(-50%);
+          z-index: 1000;
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          padding: 10px 16px;
+          background: linear-gradient(165deg,
+            rgba(22, 25, 32, 0.95) 0%,
+            rgba(13, 15, 18, 0.97) 100%
+          );
+          backdrop-filter: blur(12px);
+          border: 1px solid rgba(255, 255, 255, 0.08);
+          border-radius: 24px;
+          font-family: 'DM Sans', -apple-system, sans-serif;
+          font-size: 0.85rem;
+          color: #6b7a90;
+          cursor: pointer;
+          transition: all 0.15s ease;
+          box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+        }
+
+        .search-button:hover {
+          border-color: rgba(196, 120, 92, 0.3);
+          color: #a8b3c7;
+          box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+        }
+
+        .search-button__text {
+          font-weight: 500;
+        }
+
+        .search-button__kbd {
+          padding: 3px 6px;
+          background: rgba(255, 255, 255, 0.06);
+          border: 1px solid rgba(255, 255, 255, 0.1);
+          border-radius: 4px;
+          font-size: 0.7rem;
+          font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+          color: #4a5568;
         }
 
         .zone-indicator {
