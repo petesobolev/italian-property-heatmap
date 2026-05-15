@@ -21,6 +21,7 @@ export interface MunicipalityData {
   opportunityScore?: number;
   confidenceScore?: number;
   // Demographics
+  demographicsYear?: number;
   population?: number;
   populationDensity?: number;
   youngRatio?: number;
@@ -29,6 +30,7 @@ export interface MunicipalityData {
   // Transactions
   ntnTotal?: number;
   ntnPer1000Pop?: number;
+  isProvincialTransaction?: boolean;
 }
 
 interface MunicipalityDrawerProps {
@@ -362,6 +364,9 @@ export function MunicipalityDrawer({
                 <h3 className="drawer__section-title">
                   <span className="drawer__section-icon">👥</span>
                   Demographics
+                  {m.demographicsYear && (
+                    <span className="drawer__section-year">{m.demographicsYear}</span>
+                  )}
                 </h3>
                 <div className="drawer__stats-grid drawer__stats-grid--3col">
                   <StatCard
@@ -403,12 +408,15 @@ export function MunicipalityDrawer({
                 <h3 className="drawer__section-title">
                   <span className="drawer__section-icon">📊</span>
                   Market Activity
+                  {m.isProvincialTransaction && (
+                    <span className="drawer__section-year">Provincial</span>
+                  )}
                 </h3>
                 <div className="drawer__stats-grid">
                   <StatCard
-                    label="Transactions (NTN)"
+                    label={m.isProvincialTransaction ? "Province NTN" : "Transactions (NTN)"}
                     value={formatNumber(m.ntnTotal, 1)}
-                    subValue="normalized count"
+                    subValue={m.isProvincialTransaction ? "province total" : "normalized count"}
                     icon="⇄"
                   />
                   <StatCard
@@ -670,6 +678,18 @@ export function MunicipalityDrawer({
 
         .drawer__section-icon {
           font-size: 0.9rem;
+        }
+
+        .drawer__section-year {
+          margin-left: auto;
+          font-size: 0.6rem;
+          font-weight: 500;
+          color: #6b7a90;
+          padding: 2px 6px;
+          background: rgba(255, 255, 255, 0.04);
+          border-radius: 4px;
+          text-transform: none;
+          letter-spacing: 0;
         }
 
         .drawer__stats-grid {

@@ -171,7 +171,7 @@ export async function GET(request: Request, { params }: RouteParams) {
     .order("period_id", { ascending: false })
     .limit(8);
 
-  // 5. Fetch historical transactions
+  // 5. Fetch historical transactions (municipal level)
   const { data: historicalTransactions } = await supabase
     .schema("mart")
     .from("municipality_transactions_semester")
@@ -187,6 +187,28 @@ export async function GET(request: Request, { params }: RouteParams) {
     .eq("property_segment", segment)
     .order("period_id", { ascending: false })
     .limit(8);
+
+  // 5b. Fallback: Fetch provincial transactions if no municipal data
+  // Provincial data shows capoluogo vs non-capoluogo transactions
+  const provinceCode = municipalityData.province_code;
+  let provincialTransactions: Array<{
+    period_id: string;
+    ntn_total: number;
+    is_capoluogo: boolean;
+  }> | null = null;
+
+  if (!historicalTransactions || historicalTransactions.length === 0) {
+    const { data: provTx } = await supabase
+      .schema("mart")
+      .from("province_transactions_semester")
+      .select("period_id, ntn_total, is_capoluogo")
+      .eq("province_code", provinceCode)
+      .eq("property_segment", segment)
+      .order("period_id", { ascending: false })
+      .limit(16); // Get both capoluogo and non-capoluogo for 8 periods
+
+    provincialTransactions = provTx;
+  }
 
   // 6. Fetch latest demographics
   const { data: demographics } = await supabase
@@ -534,6 +556,32 @@ export async function GET(request: Request, { params }: RouteParams) {
       ntnPer1000Pop: t.ntn_per_1000_pop,
       absorptionRate: t.absorption_rate,
     })),
+    // Provincial-level transaction data (fallback when no municipal data)
+    provincialTransactions: provincialTransactions
+      ? (() => {
+          // Group by period and sum capoluogo + non-capoluogo
+          const byPeriod = new Map<string, { capoluogo: number; nonCapoluogo: number }>();
+          for (const t of provincialTransactions) {
+            const existing = byPeriod.get(t.period_id) || { capoluogo: 0, nonCapoluogo: 0 };
+            if (t.is_capoluogo) {
+              existing.capoluogo = t.ntn_total;
+            } else {
+              existing.nonCapoluogo = t.ntn_total;
+            }
+            byPeriod.set(t.period_id, existing);
+          }
+          // Convert to array sorted by period descending
+          return Array.from(byPeriod.entries())
+            .sort((a, b) => b[0].localeCompare(a[0]))
+            .slice(0, 8)
+            .map(([periodId, data]) => ({
+              periodId,
+              ntnCapoluogo: data.capoluogo,
+              ntnNonCapoluogo: data.nonCapoluogo,
+              ntnTotal: data.capoluogo + data.nonCapoluogo,
+            }));
+        })()
+      : null,
     demographics: demographics
       ? {
           year: demographics.reference_year,

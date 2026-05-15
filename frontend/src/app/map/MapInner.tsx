@@ -804,14 +804,18 @@ export function MapInner() {
           opportunityScore: data.forecast?.opportunityScore,
           confidenceScore: data.forecast?.confidenceScore,
           // Demographics
+          demographicsYear: data.demographics?.year,
           population: data.demographics?.totalPopulation,
           populationDensity: data.demographics?.populationDensity,
           youngRatio: data.demographics?.youngRatio,
           elderlyRatio: data.demographics?.elderlyRatio,
           foreignRatio: data.demographics?.foreignRatio,
-          // Transactions (latest semester)
-          ntnTotal: data.historicalTransactions?.[0]?.ntnTotal,
+          // Transactions (latest semester) - use municipal or fallback to provincial
+          ntnTotal: data.historicalTransactions?.[0]?.ntnTotal
+            ?? data.provincialTransactions?.[0]?.ntnTotal,
           ntnPer1000Pop: data.historicalTransactions?.[0]?.ntnPer1000Pop,
+          // Provincial-level flag
+          isProvincialTransaction: !data.historicalTransactions?.[0] && !!data.provincialTransactions?.[0],
         });
       } catch (e) {
         console.error("Failed to fetch municipality details:", e);
