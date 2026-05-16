@@ -813,7 +813,11 @@ export function MapInner() {
           // Transactions (latest semester) - use municipal or fallback to provincial
           ntnTotal: data.historicalTransactions?.[0]?.ntnTotal
             ?? data.provincialTransactions?.[0]?.ntnTotal,
-          ntnPer1000Pop: data.historicalTransactions?.[0]?.ntnPer1000Pop,
+          ntnPer1000Pop: data.historicalTransactions?.[0]?.ntnPer1000Pop
+            // Calculate from provincial data: use capoluogo NTN / population
+            ?? (data.provincialTransactions?.[0]?.ntnCapoluogo && data.demographics?.totalPopulation
+              ? (data.provincialTransactions[0].ntnCapoluogo / (data.demographics.totalPopulation / 1000))
+              : undefined),
           // Provincial-level flag
           isProvincialTransaction: !data.historicalTransactions?.[0] && !!data.provincialTransactions?.[0],
           // Transaction period
@@ -878,7 +882,11 @@ export function MapInner() {
           foreignRatio: data.demographics?.foreignRatio,
           ntnTotal: data.historicalTransactions?.[0]?.ntnTotal
             ?? data.provincialTransactions?.[0]?.ntnTotal,
-          ntnPer1000Pop: data.historicalTransactions?.[0]?.ntnPer1000Pop,
+          ntnPer1000Pop: data.historicalTransactions?.[0]?.ntnPer1000Pop
+            // Calculate from provincial data: use capoluogo NTN / population
+            ?? (data.provincialTransactions?.[0]?.ntnCapoluogo && data.demographics?.totalPopulation
+              ? (data.provincialTransactions[0].ntnCapoluogo / (data.demographics.totalPopulation / 1000))
+              : undefined),
           isProvincialTransaction: !data.historicalTransactions?.[0] && !!data.provincialTransactions?.[0],
           transactionPeriod: data.historicalTransactions?.[0]?.periodId
             ?? data.provincialTransactions?.[0]?.periodId,
