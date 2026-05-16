@@ -43,7 +43,7 @@ interface MunicipalityDrawerProps {
 
 function formatNumber(value: number | undefined | null, decimals = 0): string {
   if (value == null) return "—";
-  return value.toLocaleString("it-IT", {
+  return value.toLocaleString("en-US", {
     minimumFractionDigits: decimals,
     maximumFractionDigits: decimals,
   });
