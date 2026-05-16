@@ -693,11 +693,11 @@ export function MunicipalityDrawer({
 
         .drawer__section-year {
           margin-left: auto;
-          font-size: 0.6rem;
+          font-size: 0.7rem;
           font-weight: 500;
-          color: #6b7a90;
-          padding: 2px 6px;
-          background: rgba(255, 255, 255, 0.04);
+          color: #8b9bb4;
+          padding: 3px 8px;
+          background: rgba(255, 255, 255, 0.06);
           border-radius: 4px;
           text-transform: none;
           letter-spacing: 0;
