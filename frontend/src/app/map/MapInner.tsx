@@ -824,6 +824,67 @@ export function MapInner() {
     [valuesByMunicipality, filters.propertySegment]
   );
 
+  // Zone click handler - opens drawer for the zone's municipality
+  const handleZoneClick = useCallback(
+    async (municipalityId: string) => {
+      // Set focused municipality for zone display
+      setFocusedMunicipalityId(municipalityId);
+
+      // Use the already-loaded value from the map layer
+      const mapValue = valuesByMunicipality[municipalityId];
+
+      // Set initial data with what we have
+      setSelectedMunicipality({
+        municipalityId,
+        name: "Loading...",
+        valueMidEurSqm: typeof mapValue === "number" ? mapValue : undefined,
+      });
+      setDrawerOpen(true);
+
+      // Fetch full details from API
+      try {
+        const res = await fetch(
+          `/api/municipality/${municipalityId}?segment=${filters.propertySegment}`
+        );
+        if (!res.ok) return;
+
+        const data = await res.json();
+
+        // Update with full data from API
+        setSelectedMunicipality({
+          municipalityId,
+          name: data.municipality?.name || municipalityId,
+          provinceCode: data.municipality?.provinceCode,
+          provinceName: data.municipality?.provinceName,
+          regionCode: data.municipality?.regionCode,
+          regionName: data.municipality?.regionName,
+          coastalFlag: data.municipality?.isCoastal,
+          mountainFlag: data.municipality?.isMountain,
+          valueMidEurSqm: data.historicalValues?.[0]?.valueMidEurSqm ?? mapValue,
+          valueMinEurSqm: data.historicalValues?.[0]?.valueMinEurSqm,
+          valueMaxEurSqm: data.historicalValues?.[0]?.valueMaxEurSqm,
+          forecastAppreciationPct: data.forecast?.appreciationPct,
+          forecastGrossYieldPct: data.forecast?.grossYieldPct,
+          opportunityScore: data.forecast?.opportunityScore,
+          confidenceScore: data.forecast?.confidenceScore,
+          demographicsYear: data.demographics?.year,
+          population: data.demographics?.totalPopulation,
+          populationDensity: data.demographics?.populationDensity,
+          youngRatio: data.demographics?.youngRatio,
+          elderlyRatio: data.demographics?.elderlyRatio,
+          foreignRatio: data.demographics?.foreignRatio,
+          ntnTotal: data.historicalTransactions?.[0]?.ntnTotal
+            ?? data.provincialTransactions?.[0]?.ntnTotal,
+          ntnPer1000Pop: data.historicalTransactions?.[0]?.ntnPer1000Pop,
+          isProvincialTransaction: !data.historicalTransactions?.[0] && !!data.provincialTransactions?.[0],
+        });
+      } catch (e) {
+        console.error("Failed to fetch municipality details:", e);
+      }
+    },
+    [valuesByMunicipality, filters.propertySegment]
+  );
+
   // Metric-specific tooltip formatting
   const formatTooltipValue = useCallback((value: number, metric: MetricType): string => {
     switch (metric) {
@@ -964,6 +1025,7 @@ export function MapInner() {
             municipalityId={effectiveMunicipalityId}
             visible={currentZoom >= 11}
             metric={filters.metric}
+            onZoneClick={handleZoneClick}
           />
         )}
         {/* Labels layer on top of polygons for readability */}

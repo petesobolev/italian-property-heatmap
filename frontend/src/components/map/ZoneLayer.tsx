@@ -5,19 +5,22 @@ import { GeoJSON, useMap, Marker } from "react-leaflet";
 import type { Feature, FeatureCollection } from "geojson";
 import type { Layer, LatLngExpression, PathOptions } from "leaflet";
 import L from "leaflet";
+import type { MetricType } from "./FiltersSidebar";
 
 interface ZoneProperties {
   omi_zone_id: string;
   zone_code: string;
   zone_description: string | null;
   zone_type: string | null;
+  metric_value: number | null;
   value_mid_eur_sqm: number | null;
 }
 
 interface ZoneLayerProps {
   municipalityId: string | null;
   visible: boolean;
-  metric?: string;
+  metric?: MetricType;
+  onZoneClick?: (municipalityId: string) => void;
 }
 
 // Minimum zoom level to show zones
@@ -25,15 +28,73 @@ const ZONE_VISIBLE_ZOOM = 11;
 // Zoom level to show permanent zone labels (same as visible zoom)
 const ZONE_LABEL_ZOOM = 11;
 
-// Color scale matching municipality layer (dark blue to light blue)
-const VALUE_COLOR_STOPS = [
-  [30, 58, 95],    // Deep Mediterranean blue (low values)
-  [45, 90, 135],
-  [74, 144, 181],
-  [124, 196, 212],
-  [184, 224, 236], // Light blue (high values)
-];
+// Color scales for different metrics (matching MapInner.tsx)
+const COLOR_SCALES: Record<string, number[][]> = {
+  value_mid_eur_sqm: [
+    [30, 58, 95],    // Deep Mediterranean blue
+    [45, 90, 135],
+    [74, 144, 181],
+    [124, 196, 212],
+    [184, 224, 236],
+  ],
+  rent_mid_eur_sqm_month: [
+    [240, 249, 232],  // Light green (low rent)
+    [186, 228, 188],
+    [123, 204, 196],
+    [67, 162, 202],
+    [8, 104, 172],    // Deep blue (high rent)
+  ],
+  gross_yield_pct: [
+    [254, 240, 217],  // Cream (low yield)
+    [253, 204, 138],
+    [252, 141, 89],
+    [227, 74, 51],
+    [179, 0, 0],      // Deep red (high yield)
+  ],
+  condition_premium_pct: [
+    [69, 117, 180],   // Blue (low premium)
+    [145, 191, 219],
+    [247, 247, 247],  // Neutral white
+    [253, 174, 97],
+    [215, 48, 39],    // Red (high premium)
+  ],
+  price_variance_pct: [
+    [26, 152, 80],    // Green (low variance)
+    [145, 207, 96],
+    [255, 255, 191],  // Yellow (moderate)
+    [252, 141, 89],
+    [215, 48, 39],    // Red (high variance)
+  ],
+};
+
+// Fixed ranges for certain metrics
+const FIXED_RANGES: Record<string, { min: number; max: number }> = {
+  gross_yield_pct: { min: 0, max: 15 },
+  condition_premium_pct: { min: -20, max: 60 },
+  price_variance_pct: { min: 0, max: 100 },
+};
+
 const NO_DATA_COLOR = "rgba(42, 45, 53, 0.6)"; // Neutral gray for missing data
+
+// Format metric value for tooltip
+function formatMetricValue(value: number | null, metric: string): string {
+  if (value == null || !Number.isFinite(value)) return "N/A";
+
+  switch (metric) {
+    case "value_mid_eur_sqm":
+      return `€${Math.round(value).toLocaleString()}/m²`;
+    case "rent_mid_eur_sqm_month":
+      return `€${value.toFixed(1)}/m²/mo`;
+    case "gross_yield_pct":
+      return `${value.toFixed(1)}% yield`;
+    case "price_variance_pct":
+      return `${value.toFixed(0)}% variance`;
+    case "condition_premium_pct":
+      return `${value > 0 ? "+" : ""}${value.toFixed(0)}% premium`;
+    default:
+      return `€${Math.round(value).toLocaleString()}/m²`;
+  }
+}
 
 // Get zone center for label placement
 function getFeatureCenter(feature: Feature): LatLngExpression | null {
@@ -68,7 +129,7 @@ function createLabelIcon(zoneCode: string, zoneName: string | null): L.DivIcon {
   });
 }
 
-export function ZoneLayer({ municipalityId, visible, metric }: ZoneLayerProps) {
+export function ZoneLayer({ municipalityId, visible, metric = "value_mid_eur_sqm", onZoneClick }: ZoneLayerProps) {
   const map = useMap();
   const [zones, setZones] = useState<FeatureCollection | null>(null);
   const [loading, setLoading] = useState(false);
@@ -98,9 +159,15 @@ export function ZoneLayer({ municipalityId, visible, metric }: ZoneLayerProps) {
     };
   }, [map]);
 
-  // Fetch zones when municipality changes (fetch regardless of visibility)
+  // Fetch zones when municipality or metric changes
   useEffect(() => {
     if (!municipalityId) {
+      setZones(null);
+      return;
+    }
+
+    // Skip fetching for metrics that don't have zone-level data
+    if (metric === "condition_premium_pct") {
       setZones(null);
       return;
     }
@@ -111,7 +178,7 @@ export function ZoneLayer({ municipalityId, visible, metric }: ZoneLayerProps) {
       setLoading(true);
       try {
         const response = await fetch(
-          `/api/zones/geojson?municipality_id=${municipalityId}&segment=residential`
+          `/api/zones/geojson?municipality_id=${municipalityId}&segment=residential&metric=${metric}`
         );
         if (!response.ok) {
           console.warn("Failed to fetch zones");
@@ -122,16 +189,21 @@ export function ZoneLayer({ municipalityId, visible, metric }: ZoneLayerProps) {
 
         setZones(data);
 
-        // Calculate value domain for coloring
-        const values = data.features
-          .map((f: Feature) => (f.properties as ZoneProperties)?.value_mid_eur_sqm)
-          .filter((v: unknown): v is number => typeof v === "number" && Number.isFinite(v));
+        // Calculate value domain for coloring (use fixed range if defined)
+        const fixedRange = FIXED_RANGES[metric];
+        if (fixedRange) {
+          setValueDomain(fixedRange);
+        } else {
+          const values = data.features
+            .map((f: Feature) => (f.properties as ZoneProperties)?.metric_value ?? (f.properties as ZoneProperties)?.value_mid_eur_sqm)
+            .filter((v: unknown): v is number => typeof v === "number" && Number.isFinite(v));
 
-        if (values.length > 0) {
-          setValueDomain({
-            min: Math.min(...values),
-            max: Math.max(...values),
-          });
+          if (values.length > 0) {
+            setValueDomain({
+              min: Math.min(...values),
+              max: Math.max(...values),
+            });
+          }
         }
       } catch (error) {
         console.warn("Error fetching zones:", error);
@@ -145,27 +217,27 @@ export function ZoneLayer({ municipalityId, visible, metric }: ZoneLayerProps) {
     return () => {
       cancelled = true;
     };
-  }, [municipalityId]);
+  }, [municipalityId, metric]);
 
-  // Color function for zones - matches municipality layer color scale
+  // Color function for zones - uses metric-specific color scale
   const colorFor = useCallback(
     (feature: Feature | undefined) => {
       const props = feature?.properties as ZoneProperties | undefined;
-      const value = props?.value_mid_eur_sqm;
+      const value = props?.metric_value ?? props?.value_mid_eur_sqm;
 
       // No value data - show neutral gray
       if (value == null || !Number.isFinite(value)) {
         return NO_DATA_COLOR;
       }
 
-      // Interpolate using the same color scale as municipalities
+      // Interpolate using the metric-specific color scale
       const { min, max } = valueDomain;
       if (max <= min) {
         return NO_DATA_COLOR;
       }
 
       const t = Math.max(0, Math.min(1, (value - min) / (max - min)));
-      const stops = VALUE_COLOR_STOPS;
+      const stops = COLOR_SCALES[metric] || COLOR_SCALES.value_mid_eur_sqm;
 
       // Interpolate between stops
       const scaledT = t * (stops.length - 1);
@@ -179,7 +251,7 @@ export function ZoneLayer({ municipalityId, visible, metric }: ZoneLayerProps) {
 
       return `rgba(${rgb[0]}, ${rgb[1]}, ${rgb[2]}, 0.75)`;
     },
-    [valueDomain]
+    [valueDomain, metric]
   );
 
   // Style function for zones
@@ -200,23 +272,22 @@ export function ZoneLayer({ municipalityId, visible, metric }: ZoneLayerProps) {
     styleRef.current = style;
   }, [style]);
 
-  // Event handlers for each zone feature
+  // Event handlers for each zone feature - needs metric for tooltip formatting
   const onEachFeature = useCallback(
     (feature: Feature, layer: Layer) => {
       const props = feature.properties as ZoneProperties;
-      const value = props.value_mid_eur_sqm;
+      const value = props.metric_value ?? props.value_mid_eur_sqm;
 
       // Build tooltip content
       let tooltipContent = `<strong>${props.zone_code}</strong>`;
       if (props.zone_description) {
         tooltipContent += `<br/>${props.zone_description}`;
       }
-      // Always show value line - with actual value or N/A
-      if (value != null && Number.isFinite(value)) {
-        tooltipContent += `<br/><span style="color: #4a90b5; font-weight: 600">\u20AC${Math.round(value).toLocaleString()}/m\u00B2</span>`;
-      } else {
-        tooltipContent += `<br/><span style="color: #6b7a90">Value: N/A</span>`;
-      }
+      // Show metric value with proper formatting
+      const formattedValue = formatMetricValue(value, metric);
+      const valueColor = value != null ? "#4a90b5" : "#6b7a90";
+      tooltipContent += `<br/><span style="color: ${valueColor}; font-weight: 600">${formattedValue}</span>`;
+
       if (props.zone_type) {
         const typeLabel = getZoneTypeLabel(props.zone_type);
         tooltipContent += `<br/><span style="color: #6b7a90; font-size: 0.75rem">${typeLabel}</span>`;
@@ -244,9 +315,15 @@ export function ZoneLayer({ municipalityId, visible, metric }: ZoneLayerProps) {
           // Use styleRef to get the current style function (avoids stale closure)
           target.setStyle(styleRef.current(feature));
         },
+        click: () => {
+          // Open municipality drawer when clicking on a zone
+          if (municipalityId && onZoneClick) {
+            onZoneClick(municipalityId);
+          }
+        },
       });
     },
-    [] // No dependencies - we use styleRef to always get current style
+    [metric, municipalityId, onZoneClick] // Depend on metric for proper tooltip formatting
   );
 
   // Calculate zone centers for labels
@@ -283,7 +360,7 @@ export function ZoneLayer({ municipalityId, visible, metric }: ZoneLayerProps) {
   return (
     <>
       <GeoJSON
-        key={`zones-${municipalityId}-${valueDomain.min}-${valueDomain.max}`}
+        key={`zones-${municipalityId}-${metric}-${valueDomain.min}-${valueDomain.max}`}
         data={zones}
         style={style}
         onEachFeature={onEachFeature}
