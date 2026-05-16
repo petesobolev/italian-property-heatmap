@@ -31,6 +31,7 @@ export interface MunicipalityData {
   ntnTotal?: number;
   ntnPer1000Pop?: number;
   isProvincialTransaction?: boolean;
+  transactionPeriod?: string; // e.g., "20242" for 2024 H2
 }
 
 interface MunicipalityDrawerProps {
@@ -63,6 +64,13 @@ function formatYield(value: number | undefined | null): string {
 function formatCurrency(value: number | undefined | null): string {
   if (value == null) return "—";
   return `€${formatNumber(value)}`;
+}
+
+function formatPeriod(periodId: string | undefined): string {
+  if (!periodId || periodId.length !== 5) return "";
+  const year = periodId.slice(0, 4);
+  const semester = periodId.slice(4) === "1" ? "H1" : "H2";
+  return `${year} ${semester}`;
 }
 
 function ScoreRing({
@@ -408,22 +416,25 @@ export function MunicipalityDrawer({
                 <h3 className="drawer__section-title">
                   <span className="drawer__section-icon">📊</span>
                   Market Activity
-                  {m.isProvincialTransaction && (
-                    <span className="drawer__section-year">Provincial</span>
+                  {m.transactionPeriod && (
+                    <span className="drawer__section-year">
+                      {formatPeriod(m.transactionPeriod)}
+                      {m.isProvincialTransaction ? " · Provincial" : ""}
+                    </span>
                   )}
                 </h3>
                 <div className="drawer__stats-grid">
                   <StatCard
-                    label={m.isProvincialTransaction ? "Province NTN" : "Transactions (NTN)"}
-                    value={formatNumber(m.ntnTotal, 1)}
-                    subValue={m.isProvincialTransaction ? "province total" : "normalized count"}
-                    icon="⇄"
+                    label="Property Sales"
+                    value={formatNumber(m.ntnTotal, 0)}
+                    subValue={m.isProvincialTransaction ? "province-wide (6 mo)" : "this semester"}
+                    icon="🏠"
                   />
                   <StatCard
-                    label="NTN per 1000 pop"
-                    value={formatNumber(m.ntnPer1000Pop, 2)}
-                    subValue="market intensity"
-                    icon="⚡"
+                    label="Sales per 1,000 Residents"
+                    value={formatNumber(m.ntnPer1000Pop, 1)}
+                    subValue="market activity rate"
+                    icon="📈"
                   />
                 </div>
               </section>

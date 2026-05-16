@@ -816,6 +816,9 @@ export function MapInner() {
           ntnPer1000Pop: data.historicalTransactions?.[0]?.ntnPer1000Pop,
           // Provincial-level flag
           isProvincialTransaction: !data.historicalTransactions?.[0] && !!data.provincialTransactions?.[0],
+          // Transaction period
+          transactionPeriod: data.historicalTransactions?.[0]?.periodId
+            ?? data.provincialTransactions?.[0]?.periodId,
         });
       } catch (e) {
         console.error("Failed to fetch municipality details:", e);
@@ -877,6 +880,8 @@ export function MapInner() {
             ?? data.provincialTransactions?.[0]?.ntnTotal,
           ntnPer1000Pop: data.historicalTransactions?.[0]?.ntnPer1000Pop,
           isProvincialTransaction: !data.historicalTransactions?.[0] && !!data.provincialTransactions?.[0],
+          transactionPeriod: data.historicalTransactions?.[0]?.periodId
+            ?? data.provincialTransactions?.[0]?.periodId,
         });
       } catch (e) {
         console.error("Failed to fetch municipality details:", e);
