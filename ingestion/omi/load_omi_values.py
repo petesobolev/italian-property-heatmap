@@ -878,60 +878,71 @@ class DatabaseLoader:
         return loaded, rejected
 
     def aggregate_municipality_values(self, municipality_id: str, period_id: str):
-        """Aggregate zone values to municipality level and insert into mart table."""
+        """Aggregate zone values to municipality level and insert into mart table for all segments."""
         self._ensure_connection()
-        try:
-            self.cursor.execute("""
-                SELECT value_min_eur_sqm, value_max_eur_sqm, rent_min_eur_sqm_month, rent_max_eur_sqm_month
-                FROM raw.omi_property_values
-                WHERE municipality_id = %s AND period_id = %s AND property_type = 'residenziale'
-            """, (municipality_id, period_id))
-            rows = self.cursor.fetchall()
 
-            if not rows:
-                return
+        # Define property type to segment mappings
+        segment_mappings = {
+            'residential': ['residenziale'],
+            'commercial': ['negozi', 'uffici', 'uffici_strutturati', 'centri_commerciali'],
+            'industrial': ['capannoni', 'magazzini', 'laboratori'],
+        }
 
-            val_mins = [r['value_min_eur_sqm'] for r in rows if r['value_min_eur_sqm'] is not None]
-            val_maxs = [r['value_max_eur_sqm'] for r in rows if r['value_max_eur_sqm'] is not None]
-            rent_mins = [r['rent_min_eur_sqm_month'] for r in rows if r['rent_min_eur_sqm_month'] is not None]
-            rent_maxs = [r['rent_max_eur_sqm_month'] for r in rows if r['rent_max_eur_sqm_month'] is not None]
+        for segment, property_types in segment_mappings.items():
+            try:
+                # Build query with IN clause for property types
+                placeholders = ','.join(['%s'] * len(property_types))
+                self.cursor.execute(f"""
+                    SELECT value_min_eur_sqm, value_max_eur_sqm, rent_min_eur_sqm_month, rent_max_eur_sqm_month
+                    FROM raw.omi_property_values
+                    WHERE municipality_id = %s AND period_id = %s AND property_type IN ({placeholders})
+                """, (municipality_id, period_id, *property_types))
+                rows = self.cursor.fetchall()
 
-            value_mid = (sum(val_mins + val_maxs) / (len(val_mins) + len(val_maxs))) if (val_mins or val_maxs) else None
-            rent_mid = (sum(rent_mins + rent_maxs) / (len(rent_mins) + len(rent_maxs))) if (rent_mins or rent_maxs) else None
+                if not rows:
+                    continue
 
-            self.cursor.execute("""
-                INSERT INTO mart.municipality_values_semester (
-                    municipality_id, period_id, property_segment,
-                    value_min_eur_sqm, value_max_eur_sqm, value_mid_eur_sqm,
-                    rent_min_eur_sqm_month, rent_max_eur_sqm_month, rent_mid_eur_sqm_month,
-                    zones_count, zones_with_data, updated_at
-                ) VALUES (%s, %s, 'residential', %s, %s, %s, %s, %s, %s, %s, %s, now())
-                ON CONFLICT (municipality_id, period_id, property_segment) DO UPDATE SET
-                    value_min_eur_sqm = EXCLUDED.value_min_eur_sqm,
-                    value_max_eur_sqm = EXCLUDED.value_max_eur_sqm,
-                    value_mid_eur_sqm = EXCLUDED.value_mid_eur_sqm,
-                    rent_min_eur_sqm_month = EXCLUDED.rent_min_eur_sqm_month,
-                    rent_max_eur_sqm_month = EXCLUDED.rent_max_eur_sqm_month,
-                    rent_mid_eur_sqm_month = EXCLUDED.rent_mid_eur_sqm_month,
-                    zones_count = EXCLUDED.zones_count,
-                    zones_with_data = EXCLUDED.zones_with_data,
-                    updated_at = now()
-            """, (
-                municipality_id, period_id,
-                min(val_mins) if val_mins else None,
-                max(val_maxs) if val_maxs else None,
-                value_mid,
-                min(rent_mins) if rent_mins else None,
-                max(rent_maxs) if rent_maxs else None,
-                rent_mid,
-                len(rows),
-                len(val_mins)
-            ))
-            self.conn.commit()
-            logger.debug(f"Aggregated values for {municipality_id}/{period_id}")
-        except Exception as e:
-            self.conn.rollback()
-            logger.warning(f"Failed to aggregate {municipality_id}/{period_id}: {e}")
+                val_mins = [r['value_min_eur_sqm'] for r in rows if r['value_min_eur_sqm'] is not None]
+                val_maxs = [r['value_max_eur_sqm'] for r in rows if r['value_max_eur_sqm'] is not None]
+                rent_mins = [r['rent_min_eur_sqm_month'] for r in rows if r['rent_min_eur_sqm_month'] is not None]
+                rent_maxs = [r['rent_max_eur_sqm_month'] for r in rows if r['rent_max_eur_sqm_month'] is not None]
+
+                value_mid = (sum(val_mins + val_maxs) / (len(val_mins) + len(val_maxs))) if (val_mins or val_maxs) else None
+                rent_mid = (sum(rent_mins + rent_maxs) / (len(rent_mins) + len(rent_maxs))) if (rent_mins or rent_maxs) else None
+
+                self.cursor.execute("""
+                    INSERT INTO mart.municipality_values_semester (
+                        municipality_id, period_id, property_segment,
+                        value_min_eur_sqm, value_max_eur_sqm, value_mid_eur_sqm,
+                        rent_min_eur_sqm_month, rent_max_eur_sqm_month, rent_mid_eur_sqm_month,
+                        zones_count, zones_with_data, updated_at
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now())
+                    ON CONFLICT (municipality_id, period_id, property_segment) DO UPDATE SET
+                        value_min_eur_sqm = EXCLUDED.value_min_eur_sqm,
+                        value_max_eur_sqm = EXCLUDED.value_max_eur_sqm,
+                        value_mid_eur_sqm = EXCLUDED.value_mid_eur_sqm,
+                        rent_min_eur_sqm_month = EXCLUDED.rent_min_eur_sqm_month,
+                        rent_max_eur_sqm_month = EXCLUDED.rent_max_eur_sqm_month,
+                        rent_mid_eur_sqm_month = EXCLUDED.rent_mid_eur_sqm_month,
+                        zones_count = EXCLUDED.zones_count,
+                        zones_with_data = EXCLUDED.zones_with_data,
+                        updated_at = now()
+                """, (
+                    municipality_id, period_id, segment,
+                    min(val_mins) if val_mins else None,
+                    max(val_maxs) if val_maxs else None,
+                    value_mid,
+                    min(rent_mins) if rent_mins else None,
+                    max(rent_maxs) if rent_maxs else None,
+                    rent_mid,
+                    len(rows),
+                    len(val_mins)
+                ))
+                self.conn.commit()
+                logger.debug(f"Aggregated {segment} values for {municipality_id}/{period_id}")
+            except Exception as e:
+                self.conn.rollback()
+                logger.warning(f"Failed to aggregate {segment} for {municipality_id}/{period_id}: {e}")
 
     def close(self):
         """Close database connection."""
@@ -980,6 +991,8 @@ def run_ingestion(
     skip_geometries: bool = False,
     skip_values: bool = False,
     skip_loaded: bool = False,
+    municipalities: list[str] = None,
+    max_retries: int = 3,
 ):
     """
     Main ingestion function.
@@ -991,6 +1004,8 @@ def run_ingestion(
         skip_geometries: Skip fetching zone geometries
         skip_values: Skip scraping property values (only load zones)
         skip_loaded: Skip municipalities that already have data for the requested semester
+        municipalities: List of specific ISTAT codes to process (bypasses province iteration)
+        max_retries: Maximum retry attempts for failed municipalities
     """
     logger.info("=" * 60)
     logger.info("Starting OMI Property Values Ingestion")
@@ -1008,6 +1023,101 @@ def run_ingestion(
 
     total_loaded = 0
     total_rejected = 0
+    failed_municipalities = []  # Track failed municipalities for end-of-run retry
+
+    def process_municipality(comune, istat_code: str, com_idx: int, total: int) -> tuple[int, int, bool]:
+        """
+        Process a single municipality with retry logic.
+        Returns (loaded_count, rejected_count, success).
+        """
+        nonlocal db_loader
+        loaded = 0
+        rejected = 0
+
+        for attempt in range(1, max_retries + 1):
+            try:
+                # Ensure connection is healthy before starting
+                db_loader._ensure_connection()
+
+                # Get zones for this comune (using cadastral code for API)
+                zones = omi_client.get_zones(comune.codcom)
+
+                if not zones:
+                    logger.debug(f"    No zones found for {comune.codcom}")
+                    return 0, 0, True  # Not an error, just no data
+
+                # Process each zone
+                for zone in zones:
+                    # Store zone definition (using ISTAT code for database)
+                    db_loader.upsert_omi_zone(zone, istat_code)
+
+                    if skip_values:
+                        continue
+
+                    # For each semester, get property values
+                    for semester in semesters:
+                        try:
+                            values = omi_client.get_property_values(
+                                comune.codcom, zone.zone_code, semester
+                            )
+
+                            # Update municipality_id to use ISTAT code
+                            for val in values:
+                                val.municipality_id = istat_code
+                                val.omi_zone_id = f"{istat_code}_{zone.zone_code}"
+
+                            if values:
+                                zone_loaded, zone_rejected = db_loader.insert_property_values(values)
+                                loaded += zone_loaded
+                                rejected += zone_rejected
+
+                                if zone_loaded > 0:
+                                    logger.debug(f"      Zone {zone.zone_code}/{semester}: {zone_loaded} values")
+
+                        except OMIIngestionError as e:
+                            logger.debug(f"      Error for zone {zone.zone_code}: {e}")
+                            rejected += 1
+
+                # Aggregate to municipality level
+                if not skip_values:
+                    for semester in semesters:
+                        period_id = f"{semester[:4]}H{semester[4]}"
+                        db_loader.aggregate_municipality_values(istat_code, period_id)
+
+                return loaded, rejected, True
+
+            except (psycopg2.InterfaceError, psycopg2.OperationalError) as e:
+                # Connection error - try to reconnect and retry
+                logger.warning(f"    Connection error for {comune.name} (attempt {attempt}/{max_retries}): {e}")
+                if attempt < max_retries:
+                    wait_time = 2 ** attempt  # Exponential backoff: 2, 4, 8 seconds
+                    logger.info(f"    Waiting {wait_time}s before retry...")
+                    time.sleep(wait_time)
+                    db_loader._connect()
+                else:
+                    logger.error(f"    Failed after {max_retries} attempts: {comune.name}")
+                    return 0, 0, False
+
+            except OMIIngestionError as e:
+                logger.warning(f"    Error processing {comune.name}: {e}")
+                return 0, 0, True  # OMI errors are not retryable
+
+            except Exception as e:
+                # Unexpected error - try reconnect and retry
+                logger.warning(f"    Unexpected error for {comune.name} (attempt {attempt}/{max_retries}): {e}")
+                if attempt < max_retries:
+                    wait_time = 2 ** attempt
+                    logger.info(f"    Waiting {wait_time}s before retry...")
+                    time.sleep(wait_time)
+                    try:
+                        db_loader._connect()
+                    except Exception:
+                        pass  # Will fail on next attempt if still broken
+                else:
+                    logger.error(f"    Failed after {max_retries} attempts: {comune.name}")
+                    return 0, 0, False
+
+        return 0, 0, False
 
     try:
         # Get available semesters if not specified
@@ -1025,102 +1135,117 @@ def run_ingestion(
         # Get provinces
         all_provinces = omi_client.get_provinces()
 
-        if test_mode:
-            # In test mode, just use Roma
-            provinces = ['RM']
-            logger.info("Test mode: processing only Roma")
-        elif provinces:
-            # Filter to requested provinces
-            province_codes = set(p.upper() for p in provinces)
-            all_provinces = [p for p in all_provinces if p.code.upper() in province_codes]
-            logger.info(f"Processing {len(all_provinces)} provinces: {[p.code for p in all_provinces]}")
-        else:
-            logger.info(f"Processing all {len(all_provinces)} provinces")
+        # Handle specific municipalities mode
+        if municipalities:
+            logger.info(f"Processing {len(municipalities)} specific municipalities by ISTAT code")
 
-        # Process each province
-        for prov_idx, province in enumerate(all_provinces):
-            logger.info(f"\n[{prov_idx + 1}/{len(all_provinces)}] Processing province: {province.name} ({province.code})")
-
-            try:
-                comuni = omi_client.get_comuni(province.code)
-            except OMIIngestionError as e:
-                logger.error(f"Failed to get comuni for {province.code}: {e}")
-                continue
-
-            # In test mode, limit to first 5 comuni
-            if test_mode:
-                comuni = comuni[:5]
-
-            for com_idx, comune in enumerate(comuni):
-                # Look up ISTAT code from cadastral code
-                istat_code = db_loader.find_istat_code(comune.codcom, comune.name, comune.province_code)
-                if not istat_code:
-                    logger.debug(f"  Skipping {comune.name} ({comune.codcom}) - no ISTAT mapping found")
+            # Build lookup of all comuni across all provinces
+            all_comuni = {}
+            for province in all_provinces:
+                try:
+                    comuni = omi_client.get_comuni(province.code)
+                    for comune in comuni:
+                        # Find the ISTAT code for this comune
+                        istat_code = db_loader.find_istat_code(comune.codcom, comune.name, comune.province_code)
+                        if istat_code:
+                            all_comuni[istat_code] = comune
+                            comune.istat_code = istat_code
+                except OMIIngestionError:
                     continue
 
-                comune.istat_code = istat_code
+            # Process requested municipalities
+            for idx, istat_code in enumerate(municipalities):
+                if istat_code not in all_comuni:
+                    logger.warning(f"  [{idx + 1}/{len(municipalities)}] ISTAT {istat_code} not found in OMI data")
+                    continue
 
-                # Check if municipality already has data for requested semesters
-                if skip_loaded and not skip_values:
-                    period_id = f"{semesters[0][:4]}H{semesters[0][4]}"
-                    if db_loader.municipality_has_data(istat_code, period_id):
-                        logger.debug(f"  [{com_idx + 1}/{len(comuni)}] {comune.name} - skipping (already has data)")
-                        continue
+                comune = all_comuni[istat_code]
+                logger.info(f"  [{idx + 1}/{len(municipalities)}] {comune.name} ({comune.codcom} -> {istat_code})")
 
-                logger.info(f"  [{com_idx + 1}/{len(comuni)}] {comune.name} ({comune.codcom} -> {istat_code})")
+                loaded, rejected, success = process_municipality(comune, istat_code, idx, len(municipalities))
+                total_loaded += loaded
+                total_rejected += rejected
+
+                if not success:
+                    failed_municipalities.append((comune, istat_code))
+
+        else:
+            # Standard province-based processing
+            if test_mode:
+                # In test mode, just use Roma
+                provinces = ['RM']
+                logger.info("Test mode: processing only Roma")
+            elif provinces:
+                # Filter to requested provinces
+                province_codes = set(p.upper() for p in provinces)
+                all_provinces = [p for p in all_provinces if p.code.upper() in province_codes]
+                logger.info(f"Processing {len(all_provinces)} provinces: {[p.code for p in all_provinces]}")
+            else:
+                logger.info(f"Processing all {len(all_provinces)} provinces")
+
+            # Process each province
+            for prov_idx, province in enumerate(all_provinces):
+                logger.info(f"\n[{prov_idx + 1}/{len(all_provinces)}] Processing province: {province.name} ({province.code})")
 
                 try:
-                    # Get zones for this comune (using cadastral code for API)
-                    zones = omi_client.get_zones(comune.codcom)
+                    comuni = omi_client.get_comuni(province.code)
+                except OMIIngestionError as e:
+                    logger.error(f"Failed to get comuni for {province.code}: {e}")
+                    continue
 
-                    if not zones:
-                        logger.debug(f"    No zones found for {comune.codcom}")
+                # In test mode, limit to first 5 comuni
+                if test_mode:
+                    comuni = comuni[:5]
+
+                for com_idx, comune in enumerate(comuni):
+                    # Look up ISTAT code from cadastral code
+                    istat_code = db_loader.find_istat_code(comune.codcom, comune.name, comune.province_code)
+                    if not istat_code:
+                        logger.debug(f"  Skipping {comune.name} ({comune.codcom}) - no ISTAT mapping found")
                         continue
 
-                    # Process each zone
-                    for zone in zones:
-                        # Store zone definition (using ISTAT code for database)
-                        db_loader.upsert_omi_zone(zone, istat_code)
+                    comune.istat_code = istat_code
 
-                        if skip_values:
+                    # Check if municipality already has data for requested semesters
+                    if skip_loaded and not skip_values:
+                        period_id = f"{semesters[0][:4]}H{semesters[0][4]}"
+                        if db_loader.municipality_has_data(istat_code, period_id):
+                            logger.debug(f"  [{com_idx + 1}/{len(comuni)}] {comune.name} - skipping (already has data)")
                             continue
 
-                        # For each semester, get property values
-                        for semester in semesters:
-                            try:
-                                values = omi_client.get_property_values(
-                                    comune.codcom, zone.zone_code, semester
-                                )
+                    logger.info(f"  [{com_idx + 1}/{len(comuni)}] {comune.name} ({comune.codcom} -> {istat_code})")
 
-                                # Update municipality_id to use ISTAT code
-                                for val in values:
-                                    val.municipality_id = istat_code
-                                    val.omi_zone_id = f"{istat_code}_{zone.zone_code}"
+                    loaded, rejected, success = process_municipality(comune, istat_code, com_idx, len(comuni))
+                    total_loaded += loaded
+                    total_rejected += rejected
 
-                                if values:
-                                    loaded, rejected = db_loader.insert_property_values(values)
-                                    total_loaded += loaded
-                                    total_rejected += rejected
+                    if not success:
+                        failed_municipalities.append((comune, istat_code))
 
-                                    if loaded > 0:
-                                        logger.debug(f"      Zone {zone.zone_code}/{semester}: {loaded} values")
+        # Retry failed municipalities at the end
+        if failed_municipalities:
+            logger.info(f"\n{'=' * 60}")
+            logger.info(f"Retrying {len(failed_municipalities)} failed municipalities...")
+            logger.info("=" * 60)
 
-                            except OMIIngestionError as e:
-                                logger.debug(f"      Error for zone {zone.zone_code}: {e}")
-                                total_rejected += 1
+            still_failed = []
+            for idx, (comune, istat_code) in enumerate(failed_municipalities):
+                logger.info(f"  [Retry {idx + 1}/{len(failed_municipalities)}] {comune.name} ({istat_code})")
 
-                    # Aggregate to municipality level
-                    if not skip_values:
-                        for semester in semesters:
-                            period_id = f"{semester[:4]}H{semester[4]}"
-                            db_loader.aggregate_municipality_values(istat_code, period_id)
+                # Wait a bit before retrying
+                time.sleep(3)
 
-                except OMIIngestionError as e:
-                    logger.warning(f"    Error processing {comune.name}: {e}")
-                    continue
-                except Exception as e:
-                    logger.error(f"    Unexpected error for {comune.name}: {e}")
-                    continue
+                loaded, rejected, success = process_municipality(comune, istat_code, idx, len(failed_municipalities))
+                total_loaded += loaded
+                total_rejected += rejected
+
+                if not success:
+                    still_failed.append((comune.name, istat_code))
+
+            if still_failed:
+                logger.error(f"\n{len(still_failed)} municipalities still failed after retry:")
+                for name, istat in still_failed:
+                    logger.error(f"  - {name} ({istat})")
 
         # Complete ingestion run
         db_loader.complete_ingestion_run(
@@ -1196,6 +1321,19 @@ def main():
         help='Skip municipalities that already have data for the requested semester'
     )
 
+    parser.add_argument(
+        '--municipalities', '-m',
+        nargs='+',
+        help='Specific municipality ISTAT codes to process (e.g., 052032 058104). Bypasses province-level iteration.'
+    )
+
+    parser.add_argument(
+        '--max-retries',
+        type=int,
+        default=3,
+        help='Maximum retries for failed municipalities (default: 3)'
+    )
+
     args = parser.parse_args()
 
     if args.verbose:
@@ -1209,6 +1347,8 @@ def main():
             skip_geometries=args.skip_geometries,
             skip_values=args.skip_values,
             skip_loaded=args.skip_loaded,
+            municipalities=args.municipalities,
+            max_retries=args.max_retries,
         )
     except KeyboardInterrupt:
         logger.info("\nIngestion interrupted by user")
