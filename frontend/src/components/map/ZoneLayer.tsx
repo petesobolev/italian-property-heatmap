@@ -167,7 +167,17 @@ export function ZoneLayer({ municipalityId, visible, metric = "value_mid_eur_sqm
     }
 
     // Skip fetching for metrics that don't have zone-level data
-    if (metric === "condition_premium_pct") {
+    // These are municipality-level only: demographics, forecasts, crime stats
+    const municipalityOnlyMetrics = [
+      "condition_premium_pct",
+      "foreign_ratio",
+      "vehicle_arson_rate",
+      "forecast_appreciation_pct",
+      "forecast_gross_yield_pct",
+      "opportunity_score",
+      "confidence_score",
+    ];
+    if (municipalityOnlyMetrics.includes(metric)) {
       setZones(null);
       return;
     }

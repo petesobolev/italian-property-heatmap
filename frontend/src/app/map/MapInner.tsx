@@ -136,6 +136,16 @@ const COLOR_SCALES: Record<MetricType, { stops: number[][]; noData: string }> = 
     ],
     noData: "#2a2d35",
   },
+  foreign_ratio: {
+    stops: [
+      [240, 249, 255],  // Very light blue (low %)
+      [186, 230, 253],
+      [56, 189, 248],   // Sky blue (medium %)
+      [2, 132, 199],    // Blue (higher %)
+      [7, 89, 133],     // Deep blue (highest %)
+    ],
+    noData: "#2a2d35",
+  },
 };
 
 // Dark map tiles for premium feel
@@ -336,7 +346,7 @@ export function MapInner() {
     Record<string, number | null | undefined>
   >({});
   const [loading, setLoading] = useState(true);
-  const [dataSource, setDataSource] = useState<"real" | "demo" | null>(null);
+  const [loadingProgress, setLoadingProgress] = useState({ percent: 0, stage: "Initializing..." });
   const [availablePeriodsCount, setAvailablePeriodsCount] = useState(4); // Default to 4, will be updated from API
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [selectedMunicipality, setSelectedMunicipality] = useState<MunicipalityData | null>(null);
@@ -477,7 +487,6 @@ export function MapInner() {
             data.features.some((f) => f.geometry !== null);
 
           if (hasRealGeometries) {
-            if (!cancelled) setDataSource("real");
             return data;
           }
         }
@@ -487,21 +496,45 @@ export function MapInner() {
 
       const demoRes = await fetch("/demo/municipalities.geojson");
       if (!demoRes.ok) throw new Error("Failed to load demo geojson");
-      if (!cancelled) setDataSource("demo");
       return (await demoRes.json()) as GeoJsonObject;
     }
 
     async function load() {
       setLoading(true);
+      setLoadingProgress({ percent: 5, stage: "Loading map boundaries..." });
+
+      // Track completion of parallel fetches
+      let geoComplete = false;
+      let valuesComplete = false;
+
+      const updateProgress = () => {
+        if (geoComplete && valuesComplete) {
+          setLoadingProgress({ percent: 95, stage: "Rendering map..." });
+        } else if (geoComplete) {
+          setLoadingProgress({ percent: 70, stage: "Loading property data..." });
+        } else if (valuesComplete) {
+          setLoadingProgress({ percent: 50, stage: "Processing boundaries..." });
+        }
+      };
 
       const [geo, valuesRes] = await Promise.all([
-        loadGeoJSON(),
+        loadGeoJSON().then((result) => {
+          geoComplete = true;
+          updateProgress();
+          return result;
+        }),
         fetch(
           `/api/map/layer?metric=${filters.metric}&horizonMonths=12&segment=${filters.propertySegment}&semesters=${filters.semestersToAverage}`
-        ),
+        ).then((res) => {
+          valuesComplete = true;
+          updateProgress();
+          return res;
+        }),
       ]);
 
       if (!valuesRes.ok) throw new Error("Failed to load layer values");
+
+      setLoadingProgress({ percent: 85, stage: "Processing data..." });
 
       const layer = (await valuesRes.json()) as {
         features?: { municipalityId: string; value: number | null }[];
@@ -520,6 +553,7 @@ export function MapInner() {
       if (layer.availablePeriodsCount !== undefined) {
         setAvailablePeriodsCount(layer.availablePeriodsCount);
       }
+      setLoadingProgress({ percent: 100, stage: "Complete" });
       setLoading(false);
     }
 
@@ -994,11 +1028,6 @@ export function MapInner() {
     [valuesByMunicipality, handleFeatureClick, filters.showFlatTaxEligible, filters.metric, isFlatTaxEligible, formatTooltipValue]
   );
 
-  const featureCount = useMemo(() => {
-    if (!geojson || geojson.type !== "FeatureCollection") return 0;
-    return (geojson as FeatureCollection).features?.length ?? 0;
-  }, [geojson]);
-
   return (
     <div className="map-container">
       {/* Filters Sidebar */}
@@ -1033,14 +1062,13 @@ export function MapInner() {
         )}
         {/* Region boundaries for visual clarity */}
         <RegionBoundaries />
-        {filters.metric !== "vehicle_arson_rate" && (
-          <ZoneLayer
-            municipalityId={effectiveMunicipalityId}
-            visible={currentZoom >= 11}
-            metric={filters.metric}
-            onZoneClick={handleZoneClick}
-          />
-        )}
+        {/* ZoneLayer handles metric filtering internally for municipality-only metrics */}
+        <ZoneLayer
+          municipalityId={effectiveMunicipalityId}
+          visible={currentZoom >= 11}
+          metric={filters.metric}
+          onZoneClick={handleZoneClick}
+        />
         {/* Labels layer on top of polygons for readability */}
         <TileLayer url={DARK_LABELS} pane="shadowPane" />
         <MapController onZoomChange={handleZoomChange} onCenterChange={handleCenterChange} onBoundsChange={handleBoundsChange} />
@@ -1062,21 +1090,24 @@ export function MapInner() {
         isLoading={loading}
       />
 
-      {/* Data source indicator */}
-      <div className="data-badge">
-        {loading ? (
-          <span className="data-badge__loading">Loading...</span>
-        ) : (
-          <>
-            <span
-              className={`data-badge__dot ${dataSource === "real" ? "data-badge__dot--real" : "data-badge__dot--demo"}`}
-            />
-            <span className="data-badge__text">
-              {dataSource === "real" ? "PostGIS" : "Demo"} · {featureCount.toLocaleString()}
-            </span>
-          </>
-        )}
-      </div>
+      {/* Loading overlay */}
+      {loading && (
+        <div className="loading-overlay">
+          <div className="loading-overlay__content">
+            <div className="loading-overlay__spinner" />
+            <div className="loading-overlay__progress">
+              <div className="loading-overlay__progress-bar">
+                <div
+                  className="loading-overlay__progress-fill"
+                  style={{ width: `${loadingProgress.percent}%` }}
+                />
+              </div>
+              <span className="loading-overlay__percent">{loadingProgress.percent}%</span>
+            </div>
+            <span className="loading-overlay__text">{loadingProgress.stage}</span>
+          </div>
+        </div>
+      )}
 
       {/* Search button */}
       <button
@@ -1092,8 +1123,16 @@ export function MapInner() {
         <kbd className="search-button__kbd">⌘K</kbd>
       </button>
 
-      {/* Zone indicator */}
-      {effectiveMunicipalityId && currentZoom >= 11 && filters.metric !== "vehicle_arson_rate" && (
+      {/* Zone indicator - hide for municipality-only metrics that don't have zone data */}
+      {effectiveMunicipalityId && currentZoom >= 11 && ![
+        "condition_premium_pct",
+        "foreign_ratio",
+        "vehicle_arson_rate",
+        "forecast_appreciation_pct",
+        "forecast_gross_yield_pct",
+        "opportunity_score",
+        "confidence_score",
+      ].includes(filters.metric) && (
         <div className="zone-indicator">
           <span className="zone-indicator__icon">◎</span>
           <span className="zone-indicator__text">
@@ -1198,49 +1237,84 @@ export function MapInner() {
           border-radius: 0 0 8px 8px !important;
         }
 
-        .data-badge {
+        .loading-overlay {
           position: absolute;
-          top: 16px;
-          right: 16px;
+          inset: 0;
           z-index: 1000;
           display: flex;
           align-items: center;
-          gap: 8px;
-          padding: 8px 14px;
+          justify-content: center;
+          background: rgba(13, 15, 18, 0.7);
+          backdrop-filter: blur(4px);
+        }
+
+        .loading-overlay__content {
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          gap: 16px;
+          padding: 32px 48px;
           background: linear-gradient(165deg,
-            rgba(22, 25, 32, 0.95) 0%,
-            rgba(13, 15, 18, 0.97) 100%
+            rgba(22, 25, 32, 0.98) 0%,
+            rgba(13, 15, 18, 0.99) 100%
           );
-          backdrop-filter: blur(12px);
-          border: 1px solid rgba(255, 255, 255, 0.08);
-          border-radius: 20px;
-          font-size: 0.7rem;
-          color: #a8b3c7;
-          box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+          border: 1px solid rgba(255, 255, 255, 0.1);
+          border-radius: 16px;
+          box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
         }
 
-        .data-badge__loading {
-          color: #6b7a90;
-        }
-
-        .data-badge__dot {
-          width: 8px;
-          height: 8px;
+        .loading-overlay__spinner {
+          width: 40px;
+          height: 40px;
+          border: 3px solid rgba(196, 120, 92, 0.2);
+          border-top-color: #c4785c;
           border-radius: 50%;
+          animation: spin 1s linear infinite;
         }
 
-        .data-badge__dot--real {
-          background: #4ade80;
-          box-shadow: 0 0 8px rgba(74, 222, 128, 0.4);
+        @keyframes spin {
+          to {
+            transform: rotate(360deg);
+          }
         }
 
-        .data-badge__dot--demo {
-          background: #fbbf24;
-          box-shadow: 0 0 8px rgba(251, 191, 36, 0.4);
+        .loading-overlay__progress {
+          display: flex;
+          align-items: center;
+          gap: 12px;
+          width: 200px;
         }
 
-        .data-badge__text {
+        .loading-overlay__progress-bar {
+          flex: 1;
+          height: 6px;
+          background: rgba(255, 255, 255, 0.1);
+          border-radius: 3px;
+          overflow: hidden;
+        }
+
+        .loading-overlay__progress-fill {
+          height: 100%;
+          background: linear-gradient(90deg, #c4785c, #e8a87c);
+          border-radius: 3px;
+          transition: width 0.3s ease-out;
+        }
+
+        .loading-overlay__percent {
+          font-family: 'DM Sans', -apple-system, sans-serif;
+          font-size: 0.8rem;
+          font-weight: 600;
+          color: #c4785c;
+          min-width: 36px;
+          text-align: right;
+          font-variant-numeric: tabular-nums;
+        }
+
+        .loading-overlay__text {
+          font-family: 'DM Sans', -apple-system, sans-serif;
+          font-size: 0.85rem;
           font-weight: 500;
+          color: #6b7a90;
           letter-spacing: 0.02em;
         }
 
