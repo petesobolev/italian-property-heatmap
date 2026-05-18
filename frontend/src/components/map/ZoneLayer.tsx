@@ -3,7 +3,7 @@
 import { useEffect, useState, useCallback, useMemo, useRef } from "react";
 import { GeoJSON, useMap, Marker } from "react-leaflet";
 import type { Feature, FeatureCollection } from "geojson";
-import type { Layer, LatLngExpression, PathOptions } from "leaflet";
+import type { Layer, LatLngExpression, PathOptions, GeoJSON as LeafletGeoJSON } from "leaflet";
 import L from "leaflet";
 import type { MetricType } from "./FiltersSidebar";
 
@@ -51,13 +51,6 @@ const COLOR_SCALES: Record<string, number[][]> = {
     [227, 74, 51],
     [179, 0, 0],      // Deep red (high yield)
   ],
-  condition_premium_pct: [
-    [69, 117, 180],   // Blue (low premium)
-    [145, 191, 219],
-    [247, 247, 247],  // Neutral white
-    [253, 174, 97],
-    [215, 48, 39],    // Red (high premium)
-  ],
   price_variance_pct: [
     [26, 152, 80],    // Green (low variance)
     [145, 207, 96],
@@ -70,7 +63,6 @@ const COLOR_SCALES: Record<string, number[][]> = {
 // Fixed ranges for certain metrics
 const FIXED_RANGES: Record<string, { min: number; max: number }> = {
   gross_yield_pct: { min: 0, max: 15 },
-  condition_premium_pct: { min: -20, max: 60 },
   price_variance_pct: { min: 0, max: 100 },
 };
 
@@ -89,8 +81,6 @@ function formatMetricValue(value: number | null, metric: string): string {
       return `${value.toFixed(1)}% yield`;
     case "price_variance_pct":
       return `${value.toFixed(0)}% variance`;
-    case "condition_premium_pct":
-      return `${value > 0 ? "+" : ""}${value.toFixed(0)}% premium`;
     default:
       return `€${Math.round(value).toLocaleString()}/m²`;
   }
@@ -169,7 +159,6 @@ export function ZoneLayer({ municipalityId, visible, metric = "value_mid_eur_sqm
     // Skip fetching for metrics that don't have zone-level data
     // These are municipality-level only: demographics, forecasts, crime stats
     const municipalityOnlyMetrics = [
-      "condition_premium_pct",
       "foreign_ratio",
       "vehicle_arson_rate",
       "forecast_appreciation_pct",
@@ -282,6 +271,54 @@ export function ZoneLayer({ municipalityId, visible, metric = "value_mid_eur_sqm
     styleRef.current = style;
   }, [style]);
 
+  // Ref to GeoJSON layer for managing interactivity
+  const geoJsonRef = useRef<LeafletGeoJSON | null>(null);
+
+  // Determine if a zone is the "background" zone (largest, usually R1/R type)
+  // that should be non-interactive when overlapping with smaller zones
+  // Uses zone_type as a fast heuristic: R (rural) zones are typically background
+  const backgroundZoneCode = useMemo(() => {
+    if (!zones?.features || zones.features.length <= 1) return null;
+
+    // Fast path: if there's exactly one R-type zone, it's likely the background
+    const rZones = zones.features.filter(
+      (f) => (f.properties as ZoneProperties).zone_type === "R"
+    );
+
+    if (rZones.length === 1) {
+      return (rZones[0].properties as ZoneProperties).zone_code;
+    }
+
+    // If no R zones or multiple R zones, don't mark any as background
+    return null;
+  }, [zones]);
+
+  // After render, disable pointer events on the background zone so smaller zones can capture events
+  useEffect(() => {
+    if (!geoJsonRef.current || !backgroundZoneCode) return;
+
+    const disableBackgroundPointerEvents = () => {
+      if (!geoJsonRef.current) return;
+
+      // Find the background zone's layer and disable its pointer events via CSS
+      geoJsonRef.current.eachLayer((layer) => {
+        const pathLayer = layer as L.Path & { feature?: Feature; getElement?: () => SVGElement | null };
+        const props = pathLayer.feature?.properties as ZoneProperties | undefined;
+        if (props?.zone_code === backgroundZoneCode) {
+          // Get the SVG element and disable pointer events
+          const element = pathLayer.getElement?.();
+          if (element) {
+            element.style.pointerEvents = "none";
+          }
+        }
+      });
+    };
+
+    // Defer to ensure SVG elements are rendered
+    const frameId = requestAnimationFrame(disableBackgroundPointerEvents);
+    return () => cancelAnimationFrame(frameId);
+  }, [zones, backgroundZoneCode, valueDomain]);
+
   // Event handlers for each zone feature - needs metric for tooltip formatting
   const onEachFeature = useCallback(
     (feature: Feature, layer: Layer) => {
@@ -370,6 +407,7 @@ export function ZoneLayer({ municipalityId, visible, metric = "value_mid_eur_sqm
   return (
     <>
       <GeoJSON
+        ref={geoJsonRef}
         key={`zones-${municipalityId}-${metric}-${valueDomain.min}-${valueDomain.max}`}
         data={zones}
         style={style}

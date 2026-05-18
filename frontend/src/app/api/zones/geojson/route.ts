@@ -17,7 +17,34 @@ interface ZoneValueRow {
   value_min_eur_sqm: number | null;
   value_max_eur_sqm: number | null;
   rent_mid_eur_sqm_month: number | null;
+  rent_min_eur_sqm_month: number | null;
+  rent_max_eur_sqm_month: number | null;
   value_pct_change_1s: number | null;
+}
+
+// Calculate metric value from zone data
+function calculateZoneMetricValue(
+  row: ZoneValueRow,
+  metric: string
+): number | null {
+  switch (metric) {
+    case "value_mid_eur_sqm":
+      return row.value_mid_eur_sqm;
+    case "rent_mid_eur_sqm_month":
+      return row.rent_mid_eur_sqm_month;
+    case "gross_yield_pct":
+      if (row.rent_mid_eur_sqm_month && row.value_mid_eur_sqm && row.value_mid_eur_sqm > 0) {
+        return (row.rent_mid_eur_sqm_month * 12 / row.value_mid_eur_sqm) * 100;
+      }
+      return null;
+    case "price_variance_pct":
+      if (row.value_min_eur_sqm && row.value_max_eur_sqm && row.value_mid_eur_sqm && row.value_mid_eur_sqm > 0) {
+        return ((row.value_max_eur_sqm - row.value_min_eur_sqm) / row.value_mid_eur_sqm) * 100;
+      }
+      return null;
+    default:
+      return row.value_mid_eur_sqm;
+  }
 }
 
 interface MunicipalityGeom {
@@ -257,6 +284,7 @@ export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
   const municipalityId = searchParams.get("municipality_id");
   const segment = searchParams.get("segment") ?? "residential";
+  const metric = searchParams.get("metric") ?? "value_mid_eur_sqm";
 
   if (!municipalityId) {
     return NextResponse.json(
@@ -290,36 +318,59 @@ export async function GET(request: Request) {
       }
     );
 
-    // Query values using both ID formats
+    // Query values using both ID formats - fetch all columns needed for metric calculations
     const allZoneIds = [...new Set([...zoneIds, ...istatZoneIds])];
 
     const { data: values } = await supabase
       .schema("mart")
       .from("omi_zone_values_semester")
-      .select("omi_zone_id, value_mid_eur_sqm")
+      .select("omi_zone_id, value_mid_eur_sqm, value_min_eur_sqm, value_max_eur_sqm, rent_mid_eur_sqm_month")
       .in("omi_zone_id", allZoneIds)
       .eq("property_segment", segment)
       .order("period_id", { ascending: false });
 
-    // Build a map from zone_code to value (to handle both ID formats)
+    // Build a map from zone_code to metric value (to handle both ID formats)
     const valuesByZoneCode = new Map<string, number | null>();
     for (const v of (values as ZoneValueRow[]) ?? []) {
       const zoneCode = v.omi_zone_id.split("_").slice(1).join("_");
       if (!valuesByZoneCode.has(zoneCode)) {
-        valuesByZoneCode.set(zoneCode, v.value_mid_eur_sqm);
+        valuesByZoneCode.set(zoneCode, calculateZoneMetricValue(v, metric));
       }
     }
 
     for (const feature of geojsonData.features) {
       const zoneCode = feature.properties.omi_zone_id.split("_").slice(1).join("_");
+      feature.properties.metric_value = valuesByZoneCode.get(zoneCode) ?? null;
+      // Keep value_mid_eur_sqm for backwards compatibility
       feature.properties.value_mid_eur_sqm = valuesByZoneCode.get(zoneCode) ?? null;
     }
+
+    // Sort features by bounding box area (descending) so smaller zones render on top
+    // This ensures that regardless of zone type, smaller zones capture mouse events
+    const getArea = (geom: GeoJSON.Geometry | null): number => {
+      if (!geom) return 0;
+      const bbox = getBoundingBox(geom);
+      if (!bbox) return 0;
+      return (bbox[2] - bbox[0]) * (bbox[3] - bbox[1]); // width * height
+    };
+
+    geojsonData.features.sort((a: { geometry: GeoJSON.Geometry | null }, b: { geometry: GeoJSON.Geometry | null }) => {
+      const areaA = getArea(a.geometry);
+      const areaB = getArea(b.geometry);
+      return areaB - areaA; // Larger areas first (bottom), smaller areas last (top)
+    });
 
     return NextResponse.json({
       ...geojsonData,
       municipality_id: municipalityId,
       segment,
+      metric,
       source: "database",
+    }, {
+      headers: {
+        // Cache for 5 minutes on client, 1 hour on CDN
+        "Cache-Control": "public, max-age=300, s-maxage=3600, stale-while-revalidate=86400",
+      },
     });
   }
 
@@ -405,7 +456,7 @@ export async function GET(request: Request) {
   const { data: values } = await supabase
     .schema("mart")
     .from("omi_zone_values_semester")
-    .select("omi_zone_id, value_mid_eur_sqm")
+    .select("omi_zone_id, value_mid_eur_sqm, value_min_eur_sqm, value_max_eur_sqm, rent_mid_eur_sqm_month")
     .in("omi_zone_id", zoneIds)
     .eq("property_segment", segment)
     .order("period_id", { ascending: false });
@@ -413,7 +464,7 @@ export async function GET(request: Request) {
   const latestValues = new Map<string, number | null>();
   for (const v of (values as ZoneValueRow[]) ?? []) {
     if (!latestValues.has(v.omi_zone_id)) {
-      latestValues.set(v.omi_zone_id, v.value_mid_eur_sqm);
+      latestValues.set(v.omi_zone_id, calculateZoneMetricValue(v, metric));
     }
   }
 
@@ -434,6 +485,7 @@ export async function GET(request: Request) {
       zone_code: zone.zone_code,
       zone_description: zone.zone_description,
       zone_type: zone.zone_type,
+      metric_value: latestValues.get(zone.omi_zone_id) ?? null,
       value_mid_eur_sqm: latestValues.get(zone.omi_zone_id) ?? null,
     },
     geometry: zoneGeometries[i]?.geometry ?? null,
@@ -446,6 +498,7 @@ export async function GET(request: Request) {
     features: validFeatures,
     municipality_id: municipalityId,
     segment,
+    metric,
     source: "demo_geometry",
   });
 }
