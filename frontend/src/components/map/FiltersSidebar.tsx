@@ -4,11 +4,14 @@ import { useState, useCallback } from "react";
 
 export type MetricType =
   | "value_mid_eur_sqm"
+  | "rent_mid_eur_sqm_month"
+  | "gross_yield_pct"
+  | "price_variance_pct"
   | "forecast_appreciation_pct"
   | "forecast_gross_yield_pct"
   | "opportunity_score"
   | "confidence_score"
-  | "vehicle_arson_rate";
+  | "foreign_ratio";
 
 export interface FiltersState {
   metric: MetricType;
@@ -17,6 +20,7 @@ export interface FiltersState {
   confidenceThreshold: number;
   propertySegment: "residential" | "commercial" | "industrial";
   showFlatTaxEligible: boolean;
+  semestersToAverage: number;
 }
 
 interface FiltersSidebarProps {
@@ -27,6 +31,7 @@ interface FiltersSidebarProps {
   isCollapsed?: boolean;
   onToggleCollapse?: () => void;
   showHiddenMetrics?: boolean;
+  availablePeriodsCount?: number;
 }
 
 const METRICS: { value: MetricType; label: string; icon: string; description: string; hidden?: boolean }[] = [
@@ -37,35 +42,56 @@ const METRICS: { value: MetricType; label: string; icon: string; description: st
     description: "Median price per m²",
   },
   {
+    value: "rent_mid_eur_sqm_month",
+    label: "Monthly Rent",
+    icon: "⌂",
+    description: "Rent per m²/month",
+  },
+  {
+    value: "gross_yield_pct",
+    label: "Gross Yield",
+    icon: "◎",
+    description: "Annual rent / price",
+  },
+  {
+    value: "price_variance_pct",
+    label: "Price Spread",
+    icon: "↔",
+    description: "Min to max range",
+  },
+  {
     value: "forecast_appreciation_pct",
     label: "Appreciation",
     icon: "↗",
     description: "12-month forecast",
+    hidden: true,
   },
   {
     value: "forecast_gross_yield_pct",
     label: "Rental Yield",
     icon: "%",
     description: "Gross annual yield",
+    hidden: true,
   },
   {
     value: "opportunity_score",
     label: "Opportunity",
     icon: "◆",
     description: "Composite score",
+    hidden: true,
   },
   {
     value: "confidence_score",
     label: "Confidence",
     icon: "●",
     description: "Data reliability",
+    hidden: true,
   },
   {
-    value: "vehicle_arson_rate",
-    label: "Vehicle Arson",
-    icon: "🔥",
-    description: "Incidents per 100k",
-    hidden: true,
+    value: "foreign_ratio",
+    label: "Foreign Residents",
+    icon: "🌍",
+    description: "% of population",
   },
 ];
 
@@ -83,8 +109,10 @@ export function FiltersSidebar({
   isCollapsed = false,
   onToggleCollapse,
   showHiddenMetrics = false,
+  availablePeriodsCount = 4,
 }: FiltersSidebarProps) {
   const [isAnimating, setIsAnimating] = useState(false);
+  const [isInfoExpanded, setIsInfoExpanded] = useState(false);
 
   // Filter metrics based on whether hidden metrics should be shown
   const visibleMetrics = METRICS.filter((m) => !m.hidden || showHiddenMetrics);
@@ -120,6 +148,13 @@ export function FiltersSidebar({
   const handleSegmentChange = useCallback(
     (propertySegment: FiltersState["propertySegment"]) => {
       onFiltersChange({ ...filters, propertySegment });
+    },
+    [filters, onFiltersChange]
+  );
+
+  const handleSemestersChange = useCallback(
+    (semestersToAverage: number) => {
+      onFiltersChange({ ...filters, semestersToAverage });
     },
     [filters, onFiltersChange]
   );
@@ -310,6 +345,39 @@ export function FiltersSidebar({
           </div>
         </div>
 
+        {/* Semesters to Average */}
+        <div className="filters-section">
+          <label className="filters-section__label">
+            <span className="filters-section__label-text">Data Period</span>
+            <span className="filters-section__label-value">
+              {filters.semestersToAverage === 1
+                ? "Latest (6mo)"
+                : `${filters.semestersToAverage * 6}mo avg`}
+            </span>
+          </label>
+          <div className="semester-buttons">
+            {[
+              { semesters: 1, label: "Latest" },
+              { semesters: 2, label: "12mo" },
+              { semesters: 3, label: "18mo" },
+              { semesters: 4, label: "24mo" },
+            ]
+              .filter(({ semesters }) => semesters <= availablePeriodsCount)
+              .map(({ semesters, label }) => (
+              <button
+                key={semesters}
+                onClick={() => handleSemestersChange(semesters)}
+                className={`semester-btn ${filters.semestersToAverage === semesters ? "semester-btn--active" : ""}`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          <p className="semester-hint">
+            Averaging more months improves accuracy for low-volume areas
+          </p>
+        </div>
+
         {/* Tax Regime Overlay */}
         <div className="filters-section">
           <label className="filters-section__label">
@@ -333,6 +401,63 @@ export function FiltersSidebar({
           </button>
         </div>
 
+        {/* Data Info Section */}
+        <div className="filters-section info-section">
+          <button
+            onClick={() => setIsInfoExpanded(!isInfoExpanded)}
+            className="info-toggle"
+          >
+            <span className="info-toggle__icon">
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                <circle cx="8" cy="8" r="6.5" stroke="currentColor" strokeWidth="1.5"/>
+                <path d="M8 7V11M8 5.5V5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+              </svg>
+            </span>
+            <span className="info-toggle__label">About This Data</span>
+            <span className={`info-toggle__arrow ${isInfoExpanded ? "info-toggle__arrow--expanded" : ""}`}>
+              <svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+                <path d="M3 4.5L6 7.5L9 4.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+              </svg>
+            </span>
+          </button>
+
+          {isInfoExpanded && (
+            <div className="info-content">
+              <div className="info-item">
+                <span className="info-item__label">Data Source</span>
+                <span className="info-item__value">OMI (Osservatorio Mercato Immobiliare)</span>
+              </div>
+              <div className="info-item">
+                <span className="info-item__label">Provider</span>
+                <span className="info-item__value">Agenzia delle Entrate</span>
+              </div>
+              <div className="info-item">
+                <span className="info-item__label">Price Basis</span>
+                <span className="info-item__value">Actual transaction prices (not listings)</span>
+              </div>
+              <div className="info-item">
+                <span className="info-item__label">Update Frequency</span>
+                <span className="info-item__value">Semi-annual (H1: Jan-Jun, H2: Jul-Dec)</span>
+              </div>
+              <div className="info-item">
+                <span className="info-item__label">Available Data</span>
+                <span className="info-item__value">2024 H2 - 2025 H2</span>
+              </div>
+              <div className="info-item">
+                <span className="info-item__label">Area Measurement</span>
+                <span className="info-item__value">Superficie Commerciale (weighted area)</span>
+              </div>
+              <div className="info-detail">
+                <p className="info-detail__title">Superficie Commerciale</p>
+                <p className="info-detail__text">
+                  Values are per m² of "commercial surface" - a weighted calculation that includes living areas at 100%,
+                  balconies at ~30%, garages at ~50%, cellars at ~25%, and gardens at ~10%.
+                </p>
+              </div>
+            </div>
+          )}
+        </div>
+
         {/* Footer */}
         <div className="filters-sidebar__footer">
           <button
@@ -344,6 +469,7 @@ export function FiltersSidebar({
                 confidenceThreshold: 0,
                 propertySegment: "residential",
                 showFlatTaxEligible: false,
+                semestersToAverage: 1,
               })
             }
             className="reset-btn"
@@ -740,6 +866,45 @@ export function FiltersSidebar({
           letter-spacing: 0.05em;
         }
 
+        .semester-buttons {
+          display: flex;
+          gap: 6px;
+        }
+
+        .semester-btn {
+          flex: 1;
+          padding: 8px 4px;
+          background: rgba(255, 255, 255, 0.02);
+          border: 1px solid rgba(255, 255, 255, 0.06);
+          border-radius: 6px;
+          color: #8b9bb4;
+          font-size: 0.7rem;
+          font-weight: 500;
+          cursor: pointer;
+          transition: all 0.2s ease;
+        }
+
+        .semester-btn:hover {
+          background: rgba(255, 255, 255, 0.04);
+          border-color: rgba(255, 255, 255, 0.1);
+        }
+
+        .semester-btn--active {
+          background: linear-gradient(135deg,
+            rgba(196, 120, 92, 0.15) 0%,
+            rgba(168, 93, 63, 0.1) 100%
+          );
+          border-color: rgba(196, 120, 92, 0.4);
+          color: #e8c4a0;
+        }
+
+        .semester-hint {
+          margin: 8px 0 0 0;
+          font-size: 0.6rem;
+          color: #5a6677;
+          line-height: 1.4;
+        }
+
         .filters-sidebar__footer {
           margin-top: auto;
           padding: 16px 20px;
@@ -845,6 +1010,104 @@ export function FiltersSidebar({
 
         .tax-toggle__switch--on .tax-toggle__switch-knob {
           transform: translateX(18px);
+        }
+
+        .info-section {
+          border-bottom: none;
+        }
+
+        .info-toggle {
+          width: 100%;
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          padding: 10px 12px;
+          background: rgba(255, 255, 255, 0.02);
+          border: 1px solid rgba(255, 255, 255, 0.06);
+          border-radius: 8px;
+          cursor: pointer;
+          transition: all 0.2s ease;
+          color: #8b9bb4;
+        }
+
+        .info-toggle:hover {
+          background: rgba(255, 255, 255, 0.04);
+          border-color: rgba(255, 255, 255, 0.1);
+        }
+
+        .info-toggle__icon {
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          color: #528b99;
+        }
+
+        .info-toggle__label {
+          flex: 1;
+          font-size: 0.75rem;
+          font-weight: 500;
+          text-align: left;
+          color: #a8b3c7;
+        }
+
+        .info-toggle__arrow {
+          display: flex;
+          align-items: center;
+          transition: transform 0.2s ease;
+          color: #6b7a90;
+        }
+
+        .info-toggle__arrow--expanded {
+          transform: rotate(180deg);
+        }
+
+        .info-content {
+          margin-top: 12px;
+          padding: 12px;
+          background: rgba(0, 0, 0, 0.2);
+          border-radius: 8px;
+          display: flex;
+          flex-direction: column;
+          gap: 10px;
+        }
+
+        .info-item {
+          display: flex;
+          flex-direction: column;
+          gap: 2px;
+        }
+
+        .info-item__label {
+          font-size: 0.6rem;
+          font-weight: 600;
+          text-transform: uppercase;
+          letter-spacing: 0.1em;
+          color: #6b7a90;
+        }
+
+        .info-item__value {
+          font-size: 0.75rem;
+          color: #d0d7e2;
+        }
+
+        .info-detail {
+          margin-top: 4px;
+          padding-top: 10px;
+          border-top: 1px solid rgba(255, 255, 255, 0.06);
+        }
+
+        .info-detail__title {
+          font-size: 0.7rem;
+          font-weight: 600;
+          color: #e8c4a0;
+          margin: 0 0 6px 0;
+        }
+
+        .info-detail__text {
+          font-size: 0.7rem;
+          line-height: 1.5;
+          color: #8b9bb4;
+          margin: 0;
         }
       `}</style>
     </div>

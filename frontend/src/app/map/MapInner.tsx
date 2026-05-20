@@ -66,16 +66,6 @@ const COLOR_SCALES: Record<MetricType, { stops: number[][]; noData: string }> = 
     ],
     noData: "#2a2d35",
   },
-  condition_premium_pct: {
-    stops: [
-      [69, 117, 180],   // Blue (low/negative premium - renovation opportunity)
-      [145, 191, 219],
-      [247, 247, 247],  // Neutral white
-      [253, 174, 97],
-      [215, 48, 39],    // Red (high premium)
-    ],
-    noData: "#2a2d35",
-  },
   price_variance_pct: {
     stops: [
       [26, 152, 80],    // Green (low variance - stable pricing)
@@ -123,16 +113,6 @@ const COLOR_SCALES: Record<MetricType, { stops: number[][]; noData: string }> = 
       [107, 114, 128],
       [156, 163, 175],
       [209, 213, 219],
-    ],
-    noData: "#2a2d35",
-  },
-  vehicle_arson_rate: {
-    stops: [
-      [254, 243, 199],  // Light yellow (low risk)
-      [253, 224, 139],
-      [248, 146, 79],   // Orange (medium risk)
-      [215, 48, 31],    // Red-orange (high risk)
-      [127, 29, 29],    // Deep red (very high risk)
     ],
     noData: "#2a2d35",
   },
@@ -197,12 +177,38 @@ function MapController({ center, zoom, onZoomChange, onCenterChange, onBoundsCha
   return null;
 }
 
-// Component to capture map ref for programmatic control
-function MapRefCapture({ mapRef }: { mapRef: React.MutableRefObject<L.Map | null> }) {
+// Component to capture map ref and handle drag tooltip cleanup
+function MapRefCapture({
+  mapRef,
+  activeTooltipLayerRef,
+}: {
+  mapRef: React.MutableRefObject<L.Map | null>;
+  activeTooltipLayerRef: React.MutableRefObject<Layer | null>;
+}) {
   const map = useMap();
+
   useEffect(() => {
     mapRef.current = map;
   }, [map, mapRef]);
+
+  // Close active tooltip when map drag/zoom starts to prevent stuck tooltips
+  useEffect(() => {
+    const handleDragStart = () => {
+      if (activeTooltipLayerRef.current) {
+        activeTooltipLayerRef.current.closeTooltip();
+        activeTooltipLayerRef.current = null;
+      }
+    };
+
+    map.on("dragstart", handleDragStart);
+    map.on("zoomstart", handleDragStart);
+
+    return () => {
+      map.off("dragstart", handleDragStart);
+      map.off("zoomstart", handleDragStart);
+    };
+  }, [map, activeTooltipLayerRef]);
+
   return null;
 }
 
@@ -941,8 +947,6 @@ export function MapInner() {
         return `€${value.toFixed(1)}/m²/mo`;
       case "gross_yield_pct":
         return `${value.toFixed(1)}% yield`;
-      case "condition_premium_pct":
-        return `${value > 0 ? "+" : ""}${value.toFixed(0)}% premium`;
       case "price_variance_pct":
         return `${value.toFixed(0)}% variance`;
       case "forecast_appreciation_pct":
@@ -953,8 +957,6 @@ export function MapInner() {
         return `${Math.round(value)} pts`;
       case "confidence_score":
         return `${Math.round(value)}% confidence`;
-      case "vehicle_arson_rate":
-        return `${value.toFixed(1)} per 100k`;
       default:
         return value.toLocaleString();
     }
@@ -1072,7 +1074,7 @@ export function MapInner() {
         {/* Labels layer on top of polygons for readability */}
         <TileLayer url={DARK_LABELS} pane="shadowPane" />
         <MapController onZoomChange={handleZoomChange} onCenterChange={handleCenterChange} onBoundsChange={handleBoundsChange} />
-        <MapRefCapture mapRef={mapRef} />
+        <MapRefCapture mapRef={mapRef} activeTooltipLayerRef={activeTooltipLayerRef} />
         <FocusHandler
           municipalityId={focusParam}
           geojson={geojson as FeatureCollection | null}
@@ -1125,7 +1127,6 @@ export function MapInner() {
 
       {/* Zone indicator - hide for municipality-only metrics that don't have zone data */}
       {effectiveMunicipalityId && currentZoom >= 11 && ![
-        "condition_premium_pct",
         "foreign_ratio",
         "vehicle_arson_rate",
         "forecast_appreciation_pct",

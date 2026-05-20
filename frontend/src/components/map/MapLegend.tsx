@@ -25,6 +25,26 @@ const METRIC_CONFIG: Record<
     format: (v) => `€${Math.round(v).toLocaleString()}`,
     colors: ["#1e3a5f", "#2d5a87", "#4a90b5", "#7cc4d4", "#b8e0ec"],
   },
+  rent_mid_eur_sqm_month: {
+    label: "Monthly Rent",
+    unit: "€/m²/mo",
+    format: (v) => `€${v.toFixed(1)}`,
+    colors: ["#f0f9e8", "#bae4bc", "#7bccc4", "#43a2ca", "#0868ac"],
+  },
+  gross_yield_pct: {
+    label: "Gross Yield",
+    unit: "%",
+    format: (v) => `${v.toFixed(1)}%`,
+    colors: ["#fef0d9", "#fdcc8a", "#fc8d59", "#e34a33", "#b30000"],
+    fixedRange: { min: 0, max: 15 },
+  },
+  price_variance_pct: {
+    label: "Price Spread",
+    unit: "%",
+    format: (v) => `${v.toFixed(0)}%`,
+    colors: ["#1a9850", "#91cf60", "#ffffbf", "#fc8d59", "#d73027"],
+    fixedRange: { min: 0, max: 100 },
+  },
   forecast_appreciation_pct: {
     label: "Appreciation Forecast",
     unit: "%",
@@ -53,12 +73,12 @@ const METRIC_CONFIG: Record<
     colors: ["#374151", "#4b5563", "#6b7280", "#9ca3af", "#d1d5db"],
     fixedRange: { min: 0, max: 100 },
   },
-  vehicle_arson_rate: {
-    label: "Vehicle Arson Rate",
-    unit: "per 100k",
-    format: (v) => v.toFixed(1),
-    colors: ["#fef3c7", "#fde68a", "#f8924f", "#d7301f", "#7f1d1d"],
-    fixedRange: { min: 0, max: 150 },
+  foreign_ratio: {
+    label: "Foreign Residents",
+    unit: "%",
+    format: (v) => `${v.toFixed(1)}%`,
+    colors: ["#f0f9ff", "#bae6fd", "#38bdf8", "#0284c7", "#075985"],
+    fixedRange: { min: 0, max: 25 },
   },
 };
 
