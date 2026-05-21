@@ -2,17 +2,26 @@ import { NextResponse } from "next/server";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 
 type SortField =
-  | "opportunity_score"
-  | "forecast_appreciation_pct"
-  | "forecast_gross_yield_pct"
   | "value_mid_eur_sqm"
-  | "confidence_score";
+  | "gross_yield_pct"
+  | "annualized_price_change_pct"
+  | "ntn_per_1000_pop"
+  | "data_quality_score";
+
+// Map frontend sort fields to database columns
+const SORT_FIELD_MAP: Record<SortField, string> = {
+  value_mid_eur_sqm: "value_mid_eur_sqm",
+  gross_yield_pct: "gross_yield_pct",
+  annualized_price_change_pct: "annualized_price_change_pct",
+  ntn_per_1000_pop: "ntn_per_1000_pop",
+  data_quality_score: "data_quality_score",
+};
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
 
   // Parse query parameters
-  const sortBy = (searchParams.get("sortBy") ?? "opportunity_score") as SortField;
+  const sortBy = (searchParams.get("sortBy") ?? "value_mid_eur_sqm") as SortField;
   const sortOrder = searchParams.get("sortOrder") === "asc" ? true : false;
   const limit = Math.min(100, Number(searchParams.get("limit") ?? "50"));
   const offset = Number(searchParams.get("offset") ?? "0");
@@ -20,175 +29,333 @@ export async function GET(request: Request) {
   const provinceCode = searchParams.get("province");
   const minConfidence = Number(searchParams.get("minConfidence") ?? "0");
   const segment = searchParams.get("segment") ?? "residential";
-  const horizonMonths = Number(searchParams.get("horizonMonths") ?? "12");
+  const semestersToAverage = Math.min(4, Math.max(1, Number(searchParams.get("semestersToAverage") ?? "2")));
 
   const supabase = createSupabaseServerClient();
 
-  // Get latest forecast date
-  const { data: latestDateData } = await supabase
-    .schema("model")
-    .from("forecasts_municipality")
-    .select("forecast_date")
-    .eq("horizon_months", horizonMonths)
+  // Step 1: Get the N most recent periods
+  const { data: periodsData, error: periodsError } = await supabase
+    .schema("mart")
+    .from("municipality_values_semester")
+    .select("period_id")
     .eq("property_segment", segment)
-    .eq("publishable_flag", true)
-    .order("forecast_date", { ascending: false })
-    .limit(1);
+    .order("period_id", { ascending: false });
 
-  const latestDate = latestDateData?.[0]?.forecast_date;
-  if (!latestDate) {
+  if (periodsError) {
+    return NextResponse.json({ error: periodsError.message }, { status: 500 });
+  }
+
+  // Get unique periods and take the most recent N
+  const uniquePeriods = [...new Set(periodsData?.map((p) => p.period_id) ?? [])];
+  const selectedPeriods = uniquePeriods.slice(0, semestersToAverage);
+
+  if (selectedPeriods.length === 0) {
     return NextResponse.json({
       rankings: [],
-      pagination: { total: 0, limit, offset },
-      meta: { sortBy, sortOrder: sortOrder ? "asc" : "desc", latestDate: null },
+      pagination: { total: 0, limit, offset, hasMore: false },
+      meta: {
+        sortBy,
+        sortOrder: sortOrder ? "asc" : "desc",
+        latestPeriod: null,
+        earliestPeriod: null,
+        periodsIncluded: [],
+        segment,
+        filters: { region: regionCode, province: provinceCode, minConfidence },
+      },
     });
   }
 
-  // Build forecasts query
-  let forecastsQuery = supabase
-    .schema("model")
-    .from("forecasts_municipality")
-    .select(
-      `
-      municipality_id,
-      value_mid_eur_sqm,
-      forecast_appreciation_pct,
-      forecast_gross_yield_pct,
-      opportunity_score,
-      confidence_score,
-      drivers,
-      risks
-    `,
-      { count: "exact" }
-    )
-    .eq("forecast_date", latestDate)
-    .eq("horizon_months", horizonMonths)
+  const latestPeriod = selectedPeriods[0];
+  const earliestPeriod = selectedPeriods[selectedPeriods.length - 1];
+
+  // Step 2: Get values data for selected periods
+  const { data: valuesData, error: valuesError } = await supabase
+    .schema("mart")
+    .from("municipality_values_semester")
+    .select("municipality_id, period_id, value_mid_eur_sqm, rent_mid_eur_sqm_month, data_quality_score, zones_with_data")
     .eq("property_segment", segment)
-    .eq("publishable_flag", true)
-    .gte("confidence_score", minConfidence);
+    .in("period_id", selectedPeriods)
+    .not("value_mid_eur_sqm", "is", null);
 
-  // We need to join with municipalities for filtering
-  // First get the forecasts, then filter
-  const { data: forecasts, error: forecastsError, count: totalCount } = await forecastsQuery
-    .order(sortBy, { ascending: sortOrder, nullsFirst: false })
-    .range(offset, offset + limit - 1);
-
-  if (forecastsError) {
-    return NextResponse.json(
-      { error: forecastsError.message },
-      { status: 500 }
-    );
+  if (valuesError) {
+    return NextResponse.json({ error: valuesError.message }, { status: 500 });
   }
 
-  // Get municipality details for the forecasts
-  const municipalityIds = (forecasts ?? []).map((f) => f.municipality_id);
+  // Step 3: Get latest transactions data
+  const { data: transactionsData, error: transactionsError } = await supabase
+    .schema("mart")
+    .from("municipality_transactions_semester")
+    .select("municipality_id, ntn_per_1000_pop")
+    .eq("property_segment", segment)
+    .eq("period_id", latestPeriod);
+
+  if (transactionsError) {
+    return NextResponse.json({ error: transactionsError.message }, { status: 500 });
+  }
+
+  // Create transaction lookup
+  const transactionMap = new Map(
+    (transactionsData ?? []).map((t) => [t.municipality_id, t.ntn_per_1000_pop])
+  );
+
+  // Step 4: Aggregate values by municipality
+  const municipalityData = new Map<
+    string,
+    {
+      values: { period: string; value: number; rent: number | null }[];
+      dataQuality: number[];
+      zonesWithData: number[];
+    }
+  >();
+
+  for (const row of valuesData ?? []) {
+    const existing = municipalityData.get(row.municipality_id) ?? {
+      values: [],
+      dataQuality: [],
+      zonesWithData: [],
+    };
+
+    existing.values.push({
+      period: row.period_id,
+      value: row.value_mid_eur_sqm,
+      rent: row.rent_mid_eur_sqm_month,
+    });
+    if (row.data_quality_score != null) {
+      existing.dataQuality.push(row.data_quality_score);
+    }
+    if (row.zones_with_data != null) {
+      existing.zonesWithData.push(row.zones_with_data);
+    }
+
+    municipalityData.set(row.municipality_id, existing);
+  }
+
+  // Calculate aggregated metrics for each municipality
+  interface AggregatedMunicipality {
+    municipalityId: string;
+    valueMidEurSqm: number;
+    rentMidEurSqmMonth: number | null;
+    grossYieldPct: number | null;
+    annualizedPriceChangePct: number | null;
+    dataQualityScore: number | null;
+    zonesWithData: number | null;
+    ntnPer1000Pop: number | null;
+  }
+
+  const aggregated: AggregatedMunicipality[] = [];
+
+  for (const [municipalityId, data] of municipalityData) {
+    // Need at least the latest period with a valid (non-zero) value
+    const latestValue = data.values.find((v) => v.period === latestPeriod);
+    if (!latestValue) continue;
+
+    // Skip municipalities with zero or missing values (likely damaged/uninhabited areas)
+    if (latestValue.value <= 0) continue;
+
+    // Sort values by period (newest first)
+    const sortedValues = [...data.values].sort((a, b) => b.period.localeCompare(a.period));
+
+    // Calculate average value and rent
+    const avgValue = sortedValues.reduce((sum, v) => sum + v.value, 0) / sortedValues.length;
+    const rentsWithData = sortedValues.filter((v) => v.rent != null);
+    const avgRent = rentsWithData.length > 0
+      ? rentsWithData.reduce((sum, v) => sum + (v.rent ?? 0), 0) / rentsWithData.length
+      : null;
+
+    // Calculate gross yield (annual rent / value * 100)
+    const grossYieldPct = avgRent != null && avgValue > 0
+      ? (avgRent * 12 / avgValue) * 100
+      : null;
+
+    // Calculate annualized price change (CAGR)
+    let annualizedPriceChangePct: number | null = null;
+    if (sortedValues.length >= 2) {
+      const latestVal = sortedValues[0].value;
+      const earliestVal = sortedValues[sortedValues.length - 1].value;
+      const numSemesters = sortedValues.length;
+
+      if (earliestVal > 0 && latestVal > 0) {
+        // CAGR formula: ((latest/earliest)^(2/numSemesters) - 1) * 100
+        // 2/numSemesters converts to annual rate (2 semesters = 1 year)
+        annualizedPriceChangePct = (Math.pow(latestVal / earliestVal, 2 / numSemesters) - 1) * 100;
+      }
+    }
+
+    // Average data quality score
+    const dataQualityScore = data.dataQuality.length > 0
+      ? data.dataQuality.reduce((sum, s) => sum + s, 0) / data.dataQuality.length
+      : null;
+
+    // Max zones with data
+    const zonesWithData = data.zonesWithData.length > 0
+      ? Math.max(...data.zonesWithData)
+      : null;
+
+    aggregated.push({
+      municipalityId,
+      valueMidEurSqm: avgValue,
+      rentMidEurSqmMonth: avgRent,
+      grossYieldPct,
+      annualizedPriceChangePct,
+      dataQualityScore,
+      zonesWithData,
+      ntnPer1000Pop: transactionMap.get(municipalityId) ?? null,
+    });
+  }
+
+  // Apply confidence filter
+  let filtered = minConfidence > 0
+    ? aggregated.filter((m) => (m.dataQualityScore ?? 0) >= minConfidence)
+    : aggregated;
+
+  // Step 5: Get municipality details
+  const municipalityIds = filtered.map((m) => m.municipalityId);
+
+  if (municipalityIds.length === 0) {
+    return NextResponse.json({
+      rankings: [],
+      pagination: { total: 0, limit, offset, hasMore: false },
+      meta: {
+        sortBy,
+        sortOrder: sortOrder ? "asc" : "desc",
+        latestPeriod,
+        earliestPeriod,
+        periodsIncluded: selectedPeriods,
+        segment,
+        filters: { region: regionCode, province: provinceCode, minConfidence },
+      },
+    });
+  }
 
   const { data: municipalities } = await supabase
     .schema("core")
     .from("municipalities")
-    .select(
-      `
-      municipality_id,
-      municipality_name,
-      region_code,
-      province_code,
-      coastal_flag,
-      mountain_flag
-    `
-    )
+    .select("municipality_id, municipality_name, region_code, province_code, coastal_flag, mountain_flag")
     .in("municipality_id", municipalityIds);
 
-  // Get region and province names (exclude null/empty — .in() must not receive null)
-  const regionCodes = [
-    ...new Set(
-      (municipalities ?? [])
-        .map((m) => m.region_code)
-        .filter((c): c is string => typeof c === "string" && c.length > 0)
-    ),
-  ];
-  const provinceCodes = [
-    ...new Set(
-      (municipalities ?? [])
-        .map((m) => m.province_code)
-        .filter((c): c is string => typeof c === "string" && c.length > 0)
-    ),
-  ];
-
-  const [{ data: regions }, { data: provinces }] = await Promise.all([
-    regionCodes.length > 0
-      ? supabase
-          .schema("core")
-          .from("regions")
-          .select("region_code, region_name")
-          .in("region_code", regionCodes)
-      : Promise.resolve({ data: [] as { region_code: string; region_name: string }[] | null }),
-    provinceCodes.length > 0
-      ? supabase
-          .schema("core")
-          .from("provinces")
-          .select("province_code, province_name")
-          .in("province_code", provinceCodes)
-      : Promise.resolve({
-          data: [] as { province_code: string; province_name: string }[] | null,
-        }),
-  ]);
-
-  // Create lookup maps
+  // Create municipality lookup
   const muniMap = new Map(
     (municipalities ?? []).map((m) => [m.municipality_id, m])
   );
-  const regionMap = new Map(
-    (regions ?? []).map((r) => [r.region_code, r.region_name])
-  );
-  const provinceMap = new Map(
-    (provinces ?? []).map((p) => [p.province_code, p.province_name])
-  );
 
-  // Build rankings with all data
-  let rankings = (forecasts ?? []).map((f, index) => {
-    const muni = muniMap.get(f.municipality_id);
-    return {
-      rank: offset + index + 1,
-      municipalityId: f.municipality_id,
-      name: muni?.municipality_name ?? f.municipality_id,
-      regionCode: muni?.region_code ?? null,
-      regionName: muni?.region_code ? regionMap.get(muni.region_code) : null,
-      provinceCode: muni?.province_code ?? null,
-      provinceName: muni?.province_code ? provinceMap.get(muni.province_code) : null,
-      isCoastal: muni?.coastal_flag ?? false,
-      isMountain: muni?.mountain_flag ?? false,
-      valueMidEurSqm: f.value_mid_eur_sqm,
-      appreciationPct: f.forecast_appreciation_pct,
-      grossYieldPct: f.forecast_gross_yield_pct,
-      opportunityScore: f.opportunity_score,
-      confidenceScore: f.confidence_score,
-      drivers: f.drivers,
-      risks: f.risks,
-    };
-  });
-
-  // Apply region/province filters client-side (could be optimized with a join)
+  // Apply region/province filters
   if (regionCode) {
-    rankings = rankings.filter((r) => r.regionCode === regionCode);
+    filtered = filtered.filter((m) => {
+      const muni = muniMap.get(m.municipalityId);
+      return muni?.region_code === regionCode;
+    });
   }
   if (provinceCode) {
-    rankings = rankings.filter((r) => r.provinceCode === provinceCode);
+    filtered = filtered.filter((m) => {
+      const muni = muniMap.get(m.municipalityId);
+      return muni?.province_code === provinceCode;
+    });
   }
+
+  // Get region and province names
+  const regionCodes = [...new Set(
+    (municipalities ?? [])
+      .map((m) => m.region_code)
+      .filter((c): c is string => typeof c === "string" && c.length > 0)
+  )];
+  const provinceCodes = [...new Set(
+    (municipalities ?? [])
+      .map((m) => m.province_code)
+      .filter((c): c is string => typeof c === "string" && c.length > 0)
+  )];
+
+  const [{ data: regions }, { data: provinces }] = await Promise.all([
+    regionCodes.length > 0
+      ? supabase.schema("core").from("regions").select("region_code, region_name").in("region_code", regionCodes)
+      : Promise.resolve({ data: [] as { region_code: string; region_name: string }[] | null }),
+    provinceCodes.length > 0
+      ? supabase.schema("core").from("provinces").select("province_code, province_name").in("province_code", provinceCodes)
+      : Promise.resolve({ data: [] as { province_code: string; province_name: string }[] | null }),
+  ]);
+
+  const regionMap = new Map((regions ?? []).map((r) => [r.region_code, r.region_name]));
+  const provinceMap = new Map((provinces ?? []).map((p) => [p.province_code, p.province_name]));
+
+  // Sort the results
+  const sortField = SORT_FIELD_MAP[sortBy] || "value_mid_eur_sqm";
+  const sortedData = [...filtered].sort((a, b) => {
+    let aVal: number | null;
+    let bVal: number | null;
+
+    switch (sortField) {
+      case "value_mid_eur_sqm":
+        aVal = a.valueMidEurSqm;
+        bVal = b.valueMidEurSqm;
+        break;
+      case "gross_yield_pct":
+        aVal = a.grossYieldPct;
+        bVal = b.grossYieldPct;
+        break;
+      case "annualized_price_change_pct":
+        aVal = a.annualizedPriceChangePct;
+        bVal = b.annualizedPriceChangePct;
+        break;
+      case "ntn_per_1000_pop":
+        aVal = a.ntnPer1000Pop;
+        bVal = b.ntnPer1000Pop;
+        break;
+      case "data_quality_score":
+        aVal = a.dataQualityScore;
+        bVal = b.dataQualityScore;
+        break;
+      default:
+        aVal = a.valueMidEurSqm;
+        bVal = b.valueMidEurSqm;
+    }
+
+    // Handle nulls - push to end
+    if (aVal == null && bVal == null) return 0;
+    if (aVal == null) return 1;
+    if (bVal == null) return -1;
+
+    return sortOrder ? aVal - bVal : bVal - aVal;
+  });
+
+  const totalCount = sortedData.length;
+  const paginatedData = sortedData.slice(offset, offset + limit);
+
+  // Build final response
+  const rankings = paginatedData.map((m, index) => {
+    const muni = muniMap.get(m.municipalityId);
+    return {
+      rank: offset + index + 1,
+      municipalityId: m.municipalityId,
+      name: muni?.municipality_name ?? m.municipalityId,
+      regionCode: muni?.region_code ?? null,
+      regionName: muni?.region_code ? regionMap.get(muni.region_code) ?? null : null,
+      provinceCode: muni?.province_code ?? null,
+      provinceName: muni?.province_code ? provinceMap.get(muni.province_code) ?? null : null,
+      isCoastal: muni?.coastal_flag ?? false,
+      isMountain: muni?.mountain_flag ?? false,
+      valueMidEurSqm: m.valueMidEurSqm,
+      grossYieldPct: m.grossYieldPct,
+      annualizedPriceChangePct: m.annualizedPriceChangePct,
+      salesPer1000Pop: m.ntnPer1000Pop,
+      dataQualityScore: m.dataQualityScore,
+      zonesWithData: m.zonesWithData,
+    };
+  });
 
   return NextResponse.json({
     rankings,
     pagination: {
-      total: totalCount ?? 0,
+      total: totalCount,
       limit,
       offset,
-      hasMore: offset + rankings.length < (totalCount ?? 0),
+      hasMore: offset + rankings.length < totalCount,
     },
     meta: {
       sortBy,
       sortOrder: sortOrder ? "asc" : "desc",
-      latestDate,
+      latestPeriod,
+      earliestPeriod,
+      periodsIncluded: selectedPeriods,
       segment,
-      horizonMonths,
       filters: {
         region: regionCode,
         province: provinceCode,

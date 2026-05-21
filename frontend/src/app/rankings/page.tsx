@@ -14,10 +14,11 @@ interface RankingEntry {
   isCoastal: boolean;
   isMountain: boolean;
   valueMidEurSqm: number | null;
-  appreciationPct: number | null;
   grossYieldPct: number | null;
-  opportunityScore: number | null;
-  confidenceScore: number | null;
+  annualizedPriceChangePct: number | null;
+  salesPer1000Pop: number | null;
+  dataQualityScore: number | null;
+  zonesWithData: number | null;
 }
 
 interface RankingsResponse {
@@ -31,18 +32,42 @@ interface RankingsResponse {
   meta: {
     sortBy: string;
     sortOrder: string;
-    latestDate: string | null;
+    latestPeriod: string | null;
+    earliestPeriod: string | null;
+    periodsIncluded: string[];
+    segment: string;
+    filters: {
+      region: string | null;
+      province: string | null;
+      minConfidence: number;
+    };
   };
 }
 
-type SortField = "opportunity_score" | "forecast_appreciation_pct" | "forecast_gross_yield_pct" | "value_mid_eur_sqm" | "confidence_score";
+interface RegionOption {
+  code: string;
+  name: string;
+}
+
+interface ProvinceOption {
+  code: string;
+  name: string;
+  regionCode: string;
+}
+
+type SortField =
+  | "value_mid_eur_sqm"
+  | "gross_yield_pct"
+  | "annualized_price_change_pct"
+  | "ntn_per_1000_pop"
+  | "data_quality_score";
 
 const SORT_OPTIONS: { value: SortField; label: string }[] = [
-  { value: "opportunity_score", label: "Opportunity Score" },
-  { value: "forecast_appreciation_pct", label: "Appreciation" },
-  { value: "forecast_gross_yield_pct", label: "Gross Yield" },
   { value: "value_mid_eur_sqm", label: "Property Value" },
-  { value: "confidence_score", label: "Confidence" },
+  { value: "gross_yield_pct", label: "Gross Yield" },
+  { value: "annualized_price_change_pct", label: "Price Change" },
+  { value: "ntn_per_1000_pop", label: "Sales Activity" },
+  { value: "data_quality_score", label: "Data Quality" },
 ];
 
 function formatCurrency(value: number | null): string {
@@ -56,18 +81,28 @@ function formatPercent(value: number | null, showSign = true): string {
   return `${sign}${value.toFixed(1)}%`;
 }
 
-function ScoreBadge({ value, type }: { value: number | null; type: "opportunity" | "confidence" }) {
+function formatNumber(value: number | null, decimals = 1): string {
+  if (value == null) return "—";
+  return value.toFixed(decimals);
+}
+
+function formatPeriod(period: string): string {
+  // "2025S1" -> "H1 2025"
+  const match = period.match(/(\d{4})S(\d)/);
+  if (!match) return period;
+  return `H${match[2]} ${match[1]}`;
+}
+
+function ScoreBadge({ value, type }: { value: number | null; type: "quality" }) {
   if (value == null) return <span className="score-badge score-badge--empty">—</span>;
 
   const getColor = () => {
-    if (type === "opportunity") {
-      if (value >= 75) return "high";
-      if (value >= 50) return "medium";
+    if (type === "quality") {
+      if (value >= 70) return "high";
+      if (value >= 40) return "medium";
       return "low";
     }
-    if (value >= 70) return "high";
-    if (value >= 40) return "medium";
-    return "low";
+    return "medium";
   };
 
   return (
@@ -109,13 +144,40 @@ export default function RankingsPage() {
   const [rankings, setRankings] = useState<RankingEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [sortBy, setSortBy] = useState<SortField>("opportunity_score");
+  const [sortBy, setSortBy] = useState<SortField>("value_mid_eur_sqm");
   const [sortOrder, setSortOrder] = useState<"asc" | "desc">("desc");
   const [minConfidence, setMinConfidence] = useState(0);
   const [page, setPage] = useState(0);
   const [totalCount, setTotalCount] = useState(0);
-  const [latestDate, setLatestDate] = useState<string | null>(null);
+  const [latestPeriod, setLatestPeriod] = useState<string | null>(null);
+  const [earliestPeriod, setEarliestPeriod] = useState<string | null>(null);
+  const [periodsIncluded, setPeriodsIncluded] = useState<string[]>([]);
+
+  // New filter state
+  const [regions, setRegions] = useState<RegionOption[]>([]);
+  const [provinces, setProvinces] = useState<ProvinceOption[]>([]);
+  const [selectedRegion, setSelectedRegion] = useState<string | null>(null);
+  const [selectedProvince, setSelectedProvince] = useState<string | null>(null);
+  const [semestersToAverage, setSemestersToAverage] = useState(2);
+
   const limit = 25;
+
+  // Fetch regions and provinces on mount
+  useEffect(() => {
+    async function fetchFilters() {
+      try {
+        const response = await fetch("/api/filters");
+        if (response.ok) {
+          const data = await response.json();
+          setRegions(data.regions ?? []);
+          setProvinces(data.provinces ?? []);
+        }
+      } catch {
+        // Silently fail - filters are optional
+      }
+    }
+    fetchFilters();
+  }, []);
 
   const fetchRankings = useCallback(async () => {
     setLoading(true);
@@ -127,7 +189,11 @@ export default function RankingsPage() {
         limit: String(limit),
         offset: String(page * limit),
         minConfidence: String(minConfidence),
+        semestersToAverage: String(semestersToAverage),
       });
+
+      if (selectedRegion) params.set("region", selectedRegion);
+      if (selectedProvince) params.set("province", selectedProvince);
 
       const response = await fetch(`/api/rankings?${params}`);
       if (!response.ok) throw new Error("Failed to fetch rankings");
@@ -135,13 +201,15 @@ export default function RankingsPage() {
       const data: RankingsResponse = await response.json();
       setRankings(data.rankings);
       setTotalCount(data.pagination.total);
-      setLatestDate(data.meta.latestDate);
+      setLatestPeriod(data.meta.latestPeriod);
+      setEarliestPeriod(data.meta.earliestPeriod);
+      setPeriodsIncluded(data.meta.periodsIncluded);
     } catch {
       setError("Failed to load rankings. Please try again.");
     } finally {
       setLoading(false);
     }
-  }, [sortBy, sortOrder, page, minConfidence]);
+  }, [sortBy, sortOrder, page, minConfidence, selectedRegion, selectedProvince, semestersToAverage]);
 
   useEffect(() => {
     fetchRankings();
@@ -157,20 +225,50 @@ export default function RankingsPage() {
     setPage(0);
   };
 
+  const handleRegionChange = (region: string | null) => {
+    setSelectedRegion(region);
+    setSelectedProvince(null);
+    setPage(0);
+  };
+
+  const handleProvinceChange = (province: string | null) => {
+    setSelectedProvince(province);
+    setPage(0);
+  };
+
+  const handleSemestersChange = (semesters: number) => {
+    setSemestersToAverage(semesters);
+    setPage(0);
+  };
+
+  const filteredProvinces = selectedRegion
+    ? provinces.filter((p) => p.regionCode === selectedRegion)
+    : provinces;
+
   const totalPages = Math.ceil(totalCount / limit);
 
   const exportCSV = () => {
-    const headers = ["Rank", "Name", "Province", "Region", "Value (€/m²)", "Appreciation (%)", "Yield (%)", "Opportunity", "Confidence"];
+    const headers = [
+      "Rank",
+      "Name",
+      "Province",
+      "Region",
+      "Value (EUR/m2)",
+      "Gross Yield (%)",
+      "Price Change (% ann.)",
+      "Sales per 1k Pop",
+      "Data Quality",
+    ];
     const rows = rankings.map((r) => [
       r.rank,
       r.name,
       r.provinceName || "",
       r.regionName || "",
-      r.valueMidEurSqm || "",
-      r.appreciationPct || "",
-      r.grossYieldPct || "",
-      r.opportunityScore || "",
-      r.confidenceScore || "",
+      r.valueMidEurSqm?.toFixed(0) || "",
+      r.grossYieldPct?.toFixed(2) || "",
+      r.annualizedPriceChangePct?.toFixed(2) || "",
+      r.salesPer1000Pop?.toFixed(1) || "",
+      r.dataQualityScore?.toFixed(0) || "",
     ]);
 
     const csv = [headers, ...rows].map((row) => row.join(",")).join("\n");
@@ -182,6 +280,13 @@ export default function RankingsPage() {
     a.click();
     URL.revokeObjectURL(url);
   };
+
+  const periodDisplay =
+    latestPeriod && earliestPeriod
+      ? latestPeriod === earliestPeriod
+        ? formatPeriod(latestPeriod)
+        : `${formatPeriod(earliestPeriod)} – ${formatPeriod(latestPeriod)}`
+      : null;
 
   return (
     <div className="rankings-page">
@@ -203,8 +308,11 @@ export default function RankingsPage() {
         <div className="header__content">
           <h1 className="header__title">Municipality Rankings</h1>
           <p className="header__subtitle">
-            Investment opportunity scores for Italian comuni
-            {latestDate && <span className="header__date"> · Data as of {latestDate}</span>}
+            Property market data for Italian municipalities
+            {periodDisplay && <span className="header__date"> · Data: {periodDisplay}</span>}
+            {periodsIncluded.length > 1 && (
+              <span className="header__periods"> ({periodsIncluded.length} semester avg)</span>
+            )}
           </p>
         </div>
         <div className="header__actions">
@@ -221,42 +329,95 @@ export default function RankingsPage() {
 
       {/* Filters */}
       <div className="filters">
-        <div className="filters__group">
-          <label className="filters__label">Sort By</label>
-          <div className="filters__pills">
-            {SORT_OPTIONS.map((option) => (
-              <button
-                key={option.value}
-                onClick={() => handleSort(option.value)}
-                className={`filters__pill ${sortBy === option.value ? "filters__pill--active" : ""}`}
-              >
-                {option.label}
-                {sortBy === option.value && (
-                  <span className="filters__pill-arrow">
-                    {sortOrder === "desc" ? "↓" : "↑"}
-                  </span>
-                )}
-              </button>
-            ))}
+        <div className="filters__row">
+          <div className="filters__group">
+            <label className="filters__label">Sort By</label>
+            <div className="filters__pills">
+              {SORT_OPTIONS.map((option) => (
+                <button
+                  key={option.value}
+                  onClick={() => handleSort(option.value)}
+                  className={`filters__pill ${sortBy === option.value ? "filters__pill--active" : ""}`}
+                >
+                  {option.label}
+                  {sortBy === option.value && (
+                    <span className="filters__pill-arrow">
+                      {sortOrder === "desc" ? "↓" : "↑"}
+                    </span>
+                  )}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="filters__group">
+            <label className="filters__label">
+              Min Data Quality: {minConfidence}%
+            </label>
+            <input
+              type="range"
+              min="0"
+              max="80"
+              step="10"
+              value={minConfidence}
+              onChange={(e) => {
+                setMinConfidence(Number(e.target.value));
+                setPage(0);
+              }}
+              className="filters__slider"
+            />
           </div>
         </div>
 
-        <div className="filters__group">
-          <label className="filters__label">
-            Min Confidence: {minConfidence}%
-          </label>
-          <input
-            type="range"
-            min="0"
-            max="80"
-            step="10"
-            value={minConfidence}
-            onChange={(e) => {
-              setMinConfidence(Number(e.target.value));
-              setPage(0);
-            }}
-            className="filters__slider"
-          />
+        <div className="filters__row">
+          <div className="filters__group filters__group--select">
+            <label className="filters__label">Region</label>
+            <select
+              value={selectedRegion || ""}
+              onChange={(e) => handleRegionChange(e.target.value || null)}
+              className="filters__select"
+            >
+              <option value="">All Regions</option>
+              {regions.map((r) => (
+                <option key={r.code} value={r.code}>{r.name}</option>
+              ))}
+            </select>
+          </div>
+
+          <div className="filters__group filters__group--select">
+            <label className="filters__label">Province</label>
+            <select
+              value={selectedProvince || ""}
+              onChange={(e) => handleProvinceChange(e.target.value || null)}
+              className="filters__select"
+              disabled={!selectedRegion && provinces.length > 50}
+            >
+              <option value="">All Provinces</option>
+              {filteredProvinces.map((p) => (
+                <option key={p.code} value={p.code}>{p.name}</option>
+              ))}
+            </select>
+          </div>
+
+          <div className="filters__group">
+            <label className="filters__label">Data Period</label>
+            <div className="filters__buttons">
+              {[
+                { value: 1, label: "Latest" },
+                { value: 2, label: "1 year" },
+                { value: 3, label: "18mo" },
+                { value: 4, label: "2 years" },
+              ].map(({ value, label }) => (
+                <button
+                  key={value}
+                  onClick={() => handleSemestersChange(value)}
+                  className={`filters__btn ${semestersToAverage === value ? "filters__btn--active" : ""}`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
         </div>
       </div>
 
@@ -287,32 +448,32 @@ export default function RankingsPage() {
                       {sortBy === "value_mid_eur_sqm" && <span className="sort-arrow">{sortOrder === "desc" ? "↓" : "↑"}</span>}
                     </th>
                     <th
-                      className={`table__th table__th--sortable ${sortBy === "forecast_appreciation_pct" ? "table__th--sorted" : ""}`}
-                      onClick={() => handleSort("forecast_appreciation_pct")}
+                      className={`table__th table__th--sortable ${sortBy === "annualized_price_change_pct" ? "table__th--sorted" : ""}`}
+                      onClick={() => handleSort("annualized_price_change_pct")}
                     >
-                      Appreciation
-                      {sortBy === "forecast_appreciation_pct" && <span className="sort-arrow">{sortOrder === "desc" ? "↓" : "↑"}</span>}
+                      Change
+                      {sortBy === "annualized_price_change_pct" && <span className="sort-arrow">{sortOrder === "desc" ? "↓" : "↑"}</span>}
                     </th>
                     <th
-                      className={`table__th table__th--sortable ${sortBy === "forecast_gross_yield_pct" ? "table__th--sorted" : ""}`}
-                      onClick={() => handleSort("forecast_gross_yield_pct")}
+                      className={`table__th table__th--sortable ${sortBy === "gross_yield_pct" ? "table__th--sorted" : ""}`}
+                      onClick={() => handleSort("gross_yield_pct")}
                     >
                       Yield
-                      {sortBy === "forecast_gross_yield_pct" && <span className="sort-arrow">{sortOrder === "desc" ? "↓" : "↑"}</span>}
+                      {sortBy === "gross_yield_pct" && <span className="sort-arrow">{sortOrder === "desc" ? "↓" : "↑"}</span>}
                     </th>
                     <th
-                      className={`table__th table__th--sortable ${sortBy === "opportunity_score" ? "table__th--sorted" : ""}`}
-                      onClick={() => handleSort("opportunity_score")}
+                      className={`table__th table__th--sortable ${sortBy === "ntn_per_1000_pop" ? "table__th--sorted" : ""}`}
+                      onClick={() => handleSort("ntn_per_1000_pop")}
                     >
-                      Opportunity
-                      {sortBy === "opportunity_score" && <span className="sort-arrow">{sortOrder === "desc" ? "↓" : "↑"}</span>}
+                      Sales
+                      {sortBy === "ntn_per_1000_pop" && <span className="sort-arrow">{sortOrder === "desc" ? "↓" : "↑"}</span>}
                     </th>
                     <th
-                      className={`table__th table__th--sortable ${sortBy === "confidence_score" ? "table__th--sorted" : ""}`}
-                      onClick={() => handleSort("confidence_score")}
+                      className={`table__th table__th--sortable ${sortBy === "data_quality_score" ? "table__th--sorted" : ""}`}
+                      onClick={() => handleSort("data_quality_score")}
                     >
-                      Confidence
-                      {sortBy === "confidence_score" && <span className="sort-arrow">{sortOrder === "desc" ? "↓" : "↑"}</span>}
+                      Quality
+                      {sortBy === "data_quality_score" && <span className="sort-arrow">{sortOrder === "desc" ? "↓" : "↑"}</span>}
                     </th>
                   </tr>
                 </thead>
@@ -357,18 +518,18 @@ export default function RankingsPage() {
                           <span className="table__unit">/m²</span>
                         </td>
                         <td className="table__td table__td--percent">
-                          <span className={`percent-value ${(r.appreciationPct ?? 0) >= 0 ? "positive" : "negative"}`}>
-                            {formatPercent(r.appreciationPct)}
+                          <span className={`percent-value ${(r.annualizedPriceChangePct ?? 0) >= 0 ? "positive" : "negative"}`}>
+                            {formatPercent(r.annualizedPriceChangePct)}
                           </span>
                         </td>
                         <td className="table__td table__td--percent">
                           {formatPercent(r.grossYieldPct, false)}
                         </td>
-                        <td className="table__td table__td--score">
-                          <ScoreBadge value={r.opportunityScore} type="opportunity" />
+                        <td className="table__td table__td--value">
+                          {formatNumber(r.salesPer1000Pop)}
                         </td>
                         <td className="table__td table__td--score">
-                          <ScoreBadge value={r.confidenceScore} type="confidence" />
+                          <ScoreBadge value={r.dataQualityScore} type="quality" />
                         </td>
                       </tr>
                     ))
@@ -389,7 +550,7 @@ export default function RankingsPage() {
                 </button>
                 <span className="pagination__info">
                   Page {page + 1} of {totalPages}
-                  <span className="pagination__count"> · {totalCount} municipalities</span>
+                  <span className="pagination__count"> · {totalCount.toLocaleString()} municipalities</span>
                 </span>
                 <button
                   onClick={() => setPage(Math.min(totalPages - 1, page + 1))}
@@ -491,6 +652,10 @@ export default function RankingsPage() {
         }
 
         .header__date {
+          color: #8b9bb4;
+        }
+
+        .header__periods {
           color: #5a6677;
         }
 
@@ -520,17 +685,28 @@ export default function RankingsPage() {
         /* Filters */
         .filters {
           display: flex;
-          align-items: flex-end;
-          gap: 32px;
+          flex-direction: column;
+          gap: 20px;
           padding: 24px 32px;
           background: rgba(22, 25, 32, 0.5);
           border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+        }
+
+        .filters__row {
+          display: flex;
+          align-items: flex-end;
+          gap: 32px;
+          flex-wrap: wrap;
         }
 
         .filters__group {
           display: flex;
           flex-direction: column;
           gap: 10px;
+        }
+
+        .filters__group--select {
+          min-width: 180px;
         }
 
         .filters__label {
@@ -595,6 +771,63 @@ export default function RankingsPage() {
           background: #c4785c;
           border-radius: 50%;
           cursor: pointer;
+        }
+
+        .filters__select {
+          padding: 10px 32px 10px 12px;
+          font-size: 0.8rem;
+          color: #d0d7e2;
+          background: rgba(0, 0, 0, 0.2);
+          border: 1px solid rgba(255, 255, 255, 0.08);
+          border-radius: 8px;
+          cursor: pointer;
+          appearance: none;
+          background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M3 4.5L6 7.5L9 4.5' stroke='%236b7a90' stroke-width='1.5' stroke-linecap='round' fill='none'/%3E%3C/svg%3E");
+          background-repeat: no-repeat;
+          background-position: right 12px center;
+        }
+
+        .filters__select:focus {
+          outline: none;
+          border-color: rgba(196, 120, 92, 0.5);
+        }
+
+        .filters__select:disabled {
+          opacity: 0.5;
+          cursor: not-allowed;
+        }
+
+        .filters__select option {
+          background: #1a1d23;
+          color: #d0d7e2;
+        }
+
+        .filters__buttons {
+          display: flex;
+          gap: 6px;
+        }
+
+        .filters__btn {
+          padding: 8px 12px;
+          font-size: 0.75rem;
+          font-weight: 500;
+          color: #8b9bb4;
+          background: rgba(255, 255, 255, 0.04);
+          border: 1px solid rgba(255, 255, 255, 0.08);
+          border-radius: 6px;
+          cursor: pointer;
+          transition: all 0.2s;
+        }
+
+        .filters__btn:hover {
+          background: rgba(255, 255, 255, 0.08);
+          color: #d0d7e2;
+        }
+
+        .filters__btn--active {
+          background: rgba(196, 120, 92, 0.2);
+          border-color: rgba(196, 120, 92, 0.4);
+          color: #e8c4a0;
         }
 
         /* Main */
@@ -866,10 +1099,13 @@ export default function RankingsPage() {
           }
 
           .filters {
+            padding: 20px;
+          }
+
+          .filters__row {
             flex-direction: column;
             align-items: flex-start;
             gap: 20px;
-            padding: 20px;
           }
 
           .main {
