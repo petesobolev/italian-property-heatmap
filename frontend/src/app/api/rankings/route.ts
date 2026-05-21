@@ -30,10 +30,37 @@ export async function GET(request: Request) {
   const minConfidence = Number(searchParams.get("minConfidence") ?? "0");
   const segment = searchParams.get("segment") ?? "residential";
   const semestersToAverage = Math.min(4, Math.max(1, Number(searchParams.get("semestersToAverage") ?? "2")));
+  const searchQuery = searchParams.get("search")?.toLowerCase().trim();
 
   const supabase = createSupabaseServerClient();
 
-  // Step 1: Get the N most recent periods
+  // Step 1: Get municipality info with region/province for filtering
+  let municipalitiesQuery = supabase
+    .schema("core")
+    .from("municipalities")
+    .select("municipality_id, municipality_name, region_code, province_code, coastal_flag, mountain_flag");
+
+  // Apply region/province filters at the database level
+  if (regionCode) {
+    municipalitiesQuery = municipalitiesQuery.eq("region_code", regionCode);
+  }
+  if (provinceCode) {
+    municipalitiesQuery = municipalitiesQuery.eq("province_code", provinceCode);
+  }
+
+  const { data: municipalities, error: muniError } = await municipalitiesQuery;
+
+  if (muniError) {
+    return NextResponse.json({ error: muniError.message }, { status: 500 });
+  }
+
+  // Create municipality lookup and get valid IDs for filtering
+  const muniMap = new Map(
+    (municipalities ?? []).map((m) => [m.municipality_id, m])
+  );
+  const validMunicipalityIds = new Set((municipalities ?? []).map((m) => m.municipality_id));
+
+  // Step 2: Get the N most recent periods
   const { data: periodsData, error: periodsError } = await supabase
     .schema("mart")
     .from("municipality_values_semester")
@@ -68,7 +95,7 @@ export async function GET(request: Request) {
   const latestPeriod = selectedPeriods[0];
   const earliestPeriod = selectedPeriods[selectedPeriods.length - 1];
 
-  // Step 2: Get values data for selected periods
+  // Step 3: Get values data for selected periods
   const { data: valuesData, error: valuesError } = await supabase
     .schema("mart")
     .from("municipality_values_semester")
@@ -81,7 +108,7 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: valuesError.message }, { status: 500 });
   }
 
-  // Step 3: Get latest transactions data
+  // Step 4: Get latest transactions data
   const { data: transactionsData, error: transactionsError } = await supabase
     .schema("mart")
     .from("municipality_transactions_semester")
@@ -98,7 +125,7 @@ export async function GET(request: Request) {
     (transactionsData ?? []).map((t) => [t.municipality_id, t.ntn_per_1000_pop])
   );
 
-  // Step 4: Aggregate values by municipality
+  // Step 5: Aggregate values by municipality (only for valid municipality IDs based on region/province filter)
   const municipalityData = new Map<
     string,
     {
@@ -109,6 +136,9 @@ export async function GET(request: Request) {
   >();
 
   for (const row of valuesData ?? []) {
+    // Skip municipalities not in our filtered set
+    if (!validMunicipalityIds.has(row.municipality_id)) continue;
+
     const existing = municipalityData.get(row.municipality_id) ?? {
       values: [],
       dataQuality: [],
@@ -208,10 +238,7 @@ export async function GET(request: Request) {
     ? aggregated.filter((m) => (m.dataQualityScore ?? 0) >= minConfidence)
     : aggregated;
 
-  // Step 5: Get municipality details
-  const municipalityIds = filtered.map((m) => m.municipalityId);
-
-  if (municipalityIds.length === 0) {
+  if (filtered.length === 0) {
     return NextResponse.json({
       rankings: [],
       pagination: { total: 0, limit, offset, hasMore: false },
@@ -227,32 +254,7 @@ export async function GET(request: Request) {
     });
   }
 
-  const { data: municipalities } = await supabase
-    .schema("core")
-    .from("municipalities")
-    .select("municipality_id, municipality_name, region_code, province_code, coastal_flag, mountain_flag")
-    .in("municipality_id", municipalityIds);
-
-  // Create municipality lookup
-  const muniMap = new Map(
-    (municipalities ?? []).map((m) => [m.municipality_id, m])
-  );
-
-  // Apply region/province filters
-  if (regionCode) {
-    filtered = filtered.filter((m) => {
-      const muni = muniMap.get(m.municipalityId);
-      return muni?.region_code === regionCode;
-    });
-  }
-  if (provinceCode) {
-    filtered = filtered.filter((m) => {
-      const muni = muniMap.get(m.municipalityId);
-      return muni?.province_code === provinceCode;
-    });
-  }
-
-  // Get region and province names
+  // Get region and province names for display
   const regionCodes = [...new Set(
     (municipalities ?? [])
       .map((m) => m.region_code)
@@ -317,6 +319,34 @@ export async function GET(request: Request) {
   });
 
   const totalCount = sortedData.length;
+
+  // Handle municipality search - find rank of searched municipality
+  let searchResult: {
+    municipalityId: string;
+    name: string;
+    rank: number;
+    page: number;
+  } | null = null;
+
+  if (searchQuery) {
+    // Find municipality by name (partial match)
+    const searchIndex = sortedData.findIndex((m) => {
+      const muni = muniMap.get(m.municipalityId);
+      return muni?.municipality_name.toLowerCase().includes(searchQuery);
+    });
+
+    if (searchIndex !== -1) {
+      const found = sortedData[searchIndex];
+      const muni = muniMap.get(found.municipalityId);
+      searchResult = {
+        municipalityId: found.municipalityId,
+        name: muni?.municipality_name ?? found.municipalityId,
+        rank: searchIndex + 1,
+        page: Math.floor(searchIndex / limit),
+      };
+    }
+  }
+
   const paginatedData = sortedData.slice(offset, offset + limit);
 
   // Build final response
@@ -362,5 +392,6 @@ export async function GET(request: Request) {
         minConfidence,
       },
     },
+    searchResult,
   });
 }
