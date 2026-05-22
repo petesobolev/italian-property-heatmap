@@ -178,6 +178,7 @@ export default function RankingsPage() {
   const [searchedMunicipality, setSearchedMunicipality] = useState<{ id: string; name: string } | null>(null);
   const searchContainerRef = useRef<HTMLDivElement>(null);
   const debounceRef = useRef<NodeJS.Timeout | null>(null);
+  const highlightedRowRef = useRef<HTMLTableRowElement>(null);
 
   const limit = 25;
 
@@ -343,6 +344,19 @@ export default function RankingsPage() {
     document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
   }, []);
+
+  // Scroll to highlighted row when it appears
+  useEffect(() => {
+    if (highlightedRowRef.current && searchedMunicipality) {
+      // Small delay to allow render to complete
+      setTimeout(() => {
+        highlightedRowRef.current?.scrollIntoView({
+          behavior: "smooth",
+          block: "center",
+        });
+      }, 100);
+    }
+  }, [rankings, searchedMunicipality]);
 
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
@@ -692,8 +706,15 @@ export default function RankingsPage() {
                       </td>
                     </tr>
                   ) : (
-                    rankings.map((r, index) => (
-                      <tr key={r.municipalityId} className="table__row" style={{ animationDelay: `${index * 20}ms` }}>
+                    rankings.map((r, index) => {
+                      const isHighlighted = searchedMunicipality?.id === r.municipalityId;
+                      return (
+                      <tr
+                        key={r.municipalityId}
+                        ref={isHighlighted ? highlightedRowRef : null}
+                        className={`table__row ${isHighlighted ? "table__row--highlighted" : ""}`}
+                        style={{ animationDelay: `${index * 20}ms` }}
+                      >
                         <td className="table__td table__td--rank">
                           <span className={`rank-badge ${r.rank <= 3 ? "rank-badge--top" : ""}`}>
                             {r.rank}
@@ -731,7 +752,8 @@ export default function RankingsPage() {
                           <ScoreBadge value={r.dataQualityScore} type="quality" />
                         </td>
                       </tr>
-                    ))
+                      );
+                    })
                   )}
                 </tbody>
               </table>
@@ -1308,6 +1330,26 @@ export default function RankingsPage() {
 
         .table__row:hover {
           background: rgba(255, 255, 255, 0.02);
+        }
+
+        .table__row--highlighted {
+          opacity: 1;
+          background: rgba(74, 222, 128, 0.12);
+          animation: highlightPulse 2s ease-out;
+        }
+
+        .table__row--highlighted:hover {
+          background: rgba(74, 222, 128, 0.18);
+        }
+
+        .table__row--highlighted .rank-badge {
+          background: rgba(74, 222, 128, 0.25);
+          color: #4ade80;
+        }
+
+        @keyframes highlightPulse {
+          0% { opacity: 1; background: rgba(74, 222, 128, 0.3); }
+          100% { opacity: 1; background: rgba(74, 222, 128, 0.12); }
         }
 
         .table__row--loading td {
