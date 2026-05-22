@@ -255,11 +255,19 @@ export default function RankingsPage() {
     setSelectedRegion(region);
     setSelectedProvince(null);
     setPage(0);
+    // Clear search when filter changes - ranking becomes invalid
+    setSearchResult(null);
+    setSearchedMunicipality(null);
+    setSearchQuery("");
   };
 
   const handleProvinceChange = (province: string | null) => {
     setSelectedProvince(province);
     setPage(0);
+    // Clear search when filter changes - ranking becomes invalid
+    setSearchResult(null);
+    setSearchedMunicipality(null);
+    setSearchQuery("");
   };
 
   const handleSemestersChange = (semesters: number) => {
