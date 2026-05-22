@@ -508,11 +508,25 @@ export default function RankingsPage() {
       {/* Search Result Banner */}
       {searchResult && (
         <div className="search-result-banner">
-          <div className="search-result-info">
-            <span className="search-result-icon">📍</span>
-            <span>
-              <strong>{searchResult.name}</strong> ranks <strong>#{searchResult.rank}</strong> out of {totalCount.toLocaleString()} municipalities
-            </span>
+          <div className="search-result-content">
+            <div className="search-result-info">
+              <span className="search-result-icon">📍</span>
+              <span>
+                <strong>{searchResult.name}</strong> ranks <strong>#{searchResult.rank}</strong> out of {totalCount.toLocaleString()} municipalities
+              </span>
+            </div>
+            <div className="ranking-scale">
+              <span className="ranking-scale__label ranking-scale__label--left">{totalCount.toLocaleString()}</span>
+              <div className="ranking-scale__track">
+                <div
+                  className="ranking-scale__marker"
+                  style={{ left: `${((totalCount - searchResult.rank) / (totalCount - 1)) * 100}%` }}
+                >
+                  <span className="ranking-scale__marker-label">#{searchResult.rank}</span>
+                </div>
+              </div>
+              <span className="ranking-scale__label ranking-scale__label--right">#1</span>
+            </div>
           </div>
           <div className="search-result-actions">
             {searchResult.page !== page && (
@@ -1038,7 +1052,7 @@ export default function RankingsPage() {
           align-items: center;
           justify-content: space-between;
           gap: 16px;
-          padding: 14px 32px;
+          padding: 14px 32px 24px;
           background: linear-gradient(90deg, rgba(74, 222, 128, 0.1) 0%, rgba(74, 222, 128, 0.05) 100%);
           border-bottom: 1px solid rgba(74, 222, 128, 0.2);
         }
@@ -1046,6 +1060,13 @@ export default function RankingsPage() {
         .search-result-banner--not-found {
           background: linear-gradient(90deg, rgba(251, 191, 36, 0.1) 0%, rgba(251, 191, 36, 0.05) 100%);
           border-bottom: 1px solid rgba(251, 191, 36, 0.2);
+        }
+
+        .search-result-content {
+          display: flex;
+          flex-direction: column;
+          gap: 10px;
+          flex: 1;
         }
 
         .search-result-info {
@@ -1062,6 +1083,69 @@ export default function RankingsPage() {
 
         .search-result-info strong {
           color: #f0f2f5;
+        }
+
+        /* Ranking Scale */
+        .ranking-scale {
+          display: flex;
+          align-items: center;
+          gap: 10px;
+          padding-left: 28px;
+        }
+
+        .ranking-scale__label {
+          font-size: 0.7rem;
+          font-weight: 500;
+          color: #6b7a90;
+          font-variant-numeric: tabular-nums;
+          min-width: 45px;
+        }
+
+        .ranking-scale__label--left {
+          text-align: right;
+        }
+
+        .ranking-scale__label--right {
+          text-align: left;
+          color: #4ade80;
+        }
+
+        .ranking-scale__track {
+          position: relative;
+          flex: 1;
+          max-width: 300px;
+          height: 6px;
+          background: linear-gradient(90deg, rgba(255, 255, 255, 0.08) 0%, rgba(74, 222, 128, 0.3) 100%);
+          border-radius: 3px;
+        }
+
+        .ranking-scale__marker {
+          position: absolute;
+          top: 50%;
+          transform: translate(-50%, -50%);
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+        }
+
+        .ranking-scale__marker::before {
+          content: '';
+          width: 12px;
+          height: 12px;
+          background: #4ade80;
+          border-radius: 50%;
+          border: 2px solid #0d0f12;
+          box-shadow: 0 0 8px rgba(74, 222, 128, 0.5);
+        }
+
+        .ranking-scale__marker-label {
+          position: absolute;
+          top: 16px;
+          font-size: 0.7rem;
+          font-weight: 600;
+          color: #4ade80;
+          white-space: nowrap;
+          font-variant-numeric: tabular-nums;
         }
 
         .search-result-actions {
