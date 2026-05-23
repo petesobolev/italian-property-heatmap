@@ -17,7 +17,6 @@ interface RankingEntry {
   grossYieldPct: number | null;
   annualizedPriceChangePct: number | null;
   salesPer1000Pop: number | null;
-  dataQualityScore: number | null;
   zonesWithData: number | null;
 }
 
@@ -46,7 +45,6 @@ interface RankingsResponse {
     filters: {
       region: string | null;
       province: string | null;
-      minConfidence: number;
     };
   };
   searchResult: SearchResult | null;
@@ -67,15 +65,13 @@ type SortField =
   | "value_mid_eur_sqm"
   | "gross_yield_pct"
   | "annualized_price_change_pct"
-  | "ntn_per_1000_pop"
-  | "data_quality_score";
+  | "ntn_per_1000_pop";
 
 const SORT_OPTIONS: { value: SortField; label: string }[] = [
   { value: "value_mid_eur_sqm", label: "Property Value" },
   { value: "gross_yield_pct", label: "Gross Yield" },
   { value: "annualized_price_change_pct", label: "Price Change" },
   { value: "ntn_per_1000_pop", label: "Sales Activity" },
-  { value: "data_quality_score", label: "Data Quality" },
 ];
 
 function formatCurrency(value: number | null): string {
@@ -101,60 +97,12 @@ function formatPeriod(period: string): string {
   return `H${match[2]} ${match[1]}`;
 }
 
-function ScoreBadge({ value, type }: { value: number | null; type: "quality" }) {
-  if (value == null) return <span className="score-badge score-badge--empty">—</span>;
-
-  const getColor = () => {
-    if (type === "quality") {
-      if (value >= 70) return "high";
-      if (value >= 40) return "medium";
-      return "low";
-    }
-    return "medium";
-  };
-
-  return (
-    <span className={`score-badge score-badge--${getColor()}`}>
-      {Math.round(value)}
-      <style jsx>{`
-        .score-badge {
-          display: inline-flex;
-          align-items: center;
-          justify-content: center;
-          min-width: 42px;
-          padding: 4px 10px;
-          font-size: 0.8rem;
-          font-weight: 600;
-          font-variant-numeric: tabular-nums;
-          border-radius: 6px;
-        }
-        .score-badge--empty {
-          color: #5a6677;
-        }
-        .score-badge--high {
-          background: rgba(74, 222, 128, 0.15);
-          color: #4ade80;
-        }
-        .score-badge--medium {
-          background: rgba(251, 191, 36, 0.15);
-          color: #fbbf24;
-        }
-        .score-badge--low {
-          background: rgba(248, 113, 113, 0.12);
-          color: #f87171;
-        }
-      `}</style>
-    </span>
-  );
-}
-
 export default function RankingsPage() {
   const [rankings, setRankings] = useState<RankingEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [sortBy, setSortBy] = useState<SortField>("value_mid_eur_sqm");
   const [sortOrder, setSortOrder] = useState<"asc" | "desc">("desc");
-  const [minConfidence, setMinConfidence] = useState(0);
   const [page, setPage] = useState(0);
   const [totalCount, setTotalCount] = useState(0);
   const [latestPeriod, setLatestPeriod] = useState<string | null>(null);
@@ -208,7 +156,6 @@ export default function RankingsPage() {
         sortOrder,
         limit: String(limit),
         offset: String(page * limit),
-        minConfidence: String(minConfidence),
         semestersToAverage: String(semestersToAverage),
       });
 
@@ -235,7 +182,7 @@ export default function RankingsPage() {
       setLoading(false);
       setIsSearching(false);
     }
-  }, [sortBy, sortOrder, page, minConfidence, selectedRegion, selectedProvince, semestersToAverage]);
+  }, [sortBy, sortOrder, page, selectedRegion, selectedProvince, semestersToAverage]);
 
   useEffect(() => {
     fetchRankings();
@@ -405,7 +352,6 @@ export default function RankingsPage() {
       "Gross Yield (%)",
       "Price Change (% ann.)",
       "Sales per 1k Pop",
-      "Data Quality",
     ];
     const rows = rankings.map((r) => [
       r.rank,
@@ -416,7 +362,6 @@ export default function RankingsPage() {
       r.grossYieldPct?.toFixed(2) || "",
       r.annualizedPriceChangePct?.toFixed(2) || "",
       r.salesPer1000Pop?.toFixed(1) || "",
-      r.dataQualityScore?.toFixed(0) || "",
     ]);
 
     const csv = [headers, ...rows].map((row) => row.join(",")).join("\n");
@@ -585,23 +530,6 @@ export default function RankingsPage() {
             </div>
           </div>
 
-          <div className="filters__group">
-            <label className="filters__label">
-              Min Data Quality: {minConfidence}%
-            </label>
-            <input
-              type="range"
-              min="0"
-              max="80"
-              step="10"
-              value={minConfidence}
-              onChange={(e) => {
-                setMinConfidence(Number(e.target.value));
-                setPage(0);
-              }}
-              className="filters__slider"
-            />
-          </div>
         </div>
 
         <div className="filters__row">
@@ -706,27 +634,20 @@ export default function RankingsPage() {
                       Sales
                       {sortBy === "ntn_per_1000_pop" && <span className="sort-arrow">{sortOrder === "desc" ? "↓" : "↑"}</span>}
                     </th>
-                    <th
-                      className={`table__th table__th--sortable ${sortBy === "data_quality_score" ? "table__th--sorted" : ""}`}
-                      onClick={() => handleSort("data_quality_score")}
-                    >
-                      Quality
-                      {sortBy === "data_quality_score" && <span className="sort-arrow">{sortOrder === "desc" ? "↓" : "↑"}</span>}
-                    </th>
                   </tr>
                 </thead>
                 <tbody>
                   {loading ? (
                     Array.from({ length: 10 }).map((_, i) => (
                       <tr key={i} className="table__row table__row--loading">
-                        <td colSpan={8}>
+                        <td colSpan={7}>
                           <div className="skeleton" />
                         </td>
                       </tr>
                     ))
                   ) : rankings.length === 0 ? (
                     <tr>
-                      <td colSpan={8} className="table__empty">
+                      <td colSpan={7} className="table__empty">
                         No municipalities found matching your criteria
                       </td>
                     </tr>
@@ -772,9 +693,6 @@ export default function RankingsPage() {
                         </td>
                         <td className="table__td table__td--value">
                           {formatNumber(r.salesPer1000Pop)}
-                        </td>
-                        <td className="table__td table__td--score">
-                          <ScoreBadge value={r.dataQualityScore} type="quality" />
                         </td>
                       </tr>
                       );
