@@ -685,6 +685,7 @@ export default function RankingsPage() {
                     <th
                       className={`table__th table__th--sortable ${sortBy === "annualized_price_change_pct" ? "table__th--sorted" : ""}`}
                       onClick={() => handleSort("annualized_price_change_pct")}
+                      title="Annualized price change vs. previous semester"
                     >
                       Change
                       {sortBy === "annualized_price_change_pct" && <span className="sort-arrow">{sortOrder === "desc" ? "↓" : "↑"}</span>}
@@ -692,6 +693,7 @@ export default function RankingsPage() {
                     <th
                       className={`table__th table__th--sortable ${sortBy === "gross_yield_pct" ? "table__th--sorted" : ""}`}
                       onClick={() => handleSort("gross_yield_pct")}
+                      title="Gross rental yield: (annual rent / property value) × 100"
                     >
                       Yield
                       {sortBy === "gross_yield_pct" && <span className="sort-arrow">{sortOrder === "desc" ? "↓" : "↑"}</span>}
@@ -699,6 +701,7 @@ export default function RankingsPage() {
                     <th
                       className={`table__th table__th--sortable ${sortBy === "ntn_per_1000_pop" ? "table__th--sorted" : ""}`}
                       onClick={() => handleSort("ntn_per_1000_pop")}
+                      title="Property sales per 1,000 residents (provincial data)"
                     >
                       Sales
                       {sortBy === "ntn_per_1000_pop" && <span className="sort-arrow">{sortOrder === "desc" ? "↓" : "↑"}</span>}
