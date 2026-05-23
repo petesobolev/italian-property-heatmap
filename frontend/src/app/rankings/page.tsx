@@ -25,6 +25,10 @@ interface SearchResult {
   name: string;
   rank: number;
   page: number;
+  regionCode: string | null;
+  regionName: string | null;
+  provinceCode: string | null;
+  provinceName: string | null;
 }
 
 interface RankingsResponse {
@@ -147,7 +151,11 @@ export default function RankingsPage() {
     fetchFilters();
   }, []);
 
-  const fetchRankings = useCallback(async (searchTerm?: string) => {
+  const fetchRankings = useCallback(async (
+    searchTerm?: string,
+    overrideRegion?: string | null,
+    overrideProvince?: string | null
+  ) => {
     setLoading(true);
     setError(null);
     try {
@@ -159,8 +167,12 @@ export default function RankingsPage() {
         semestersToAverage: String(semestersToAverage),
       });
 
-      if (selectedRegion) params.set("region", selectedRegion);
-      if (selectedProvince) params.set("province", selectedProvince);
+      // Use override values if provided, otherwise use state
+      const regionToUse = overrideRegion !== undefined ? overrideRegion : selectedRegion;
+      const provinceToUse = overrideProvince !== undefined ? overrideProvince : selectedProvince;
+
+      if (regionToUse) params.set("region", regionToUse);
+      if (provinceToUse) params.set("province", provinceToUse);
       if (searchTerm) params.set("search", searchTerm);
 
       const response = await fetch(`/api/rankings?${params}`);
@@ -482,6 +494,34 @@ export default function RankingsPage() {
             </div>
           </div>
           <div className="search-result-actions">
+            {searchResult.regionCode && selectedRegion !== searchResult.regionCode && (
+              <button
+                onClick={() => {
+                  setSelectedRegion(searchResult.regionCode);
+                  setSelectedProvince(null);
+                  setPage(0);
+                  // Fetch with region filter and re-search to get updated rank
+                  fetchRankings(searchResult.name, searchResult.regionCode, null);
+                }}
+                className="search-result-btn"
+              >
+                View in {searchResult.regionName}
+              </button>
+            )}
+            {searchResult.provinceCode && selectedProvince !== searchResult.provinceCode && (
+              <button
+                onClick={() => {
+                  setSelectedRegion(searchResult.regionCode);
+                  setSelectedProvince(searchResult.provinceCode);
+                  setPage(0);
+                  // Fetch with province filter and re-search to get updated rank
+                  fetchRankings(searchResult.name, searchResult.regionCode, searchResult.provinceCode);
+                }}
+                className="search-result-btn"
+              >
+                View in {searchResult.provinceName}
+              </button>
+            )}
             {searchResult.page !== page && (
               <button onClick={jumpToSearchResult} className="search-result-btn">
                 Jump to Page {searchResult.page + 1}

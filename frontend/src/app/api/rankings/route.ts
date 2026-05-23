@@ -147,6 +147,10 @@ export async function GET(request: Request) {
     name: string;
     rank: number;
     page: number;
+    regionCode: string | null;
+    regionName: string | null;
+    provinceCode: string | null;
+    provinceName: string | null;
   } | null = null;
 
   if (searchQuery) {
@@ -162,6 +166,10 @@ export async function GET(request: Request) {
         name: found.municipality_name,
         rank: searchIndex + 1,
         page: Math.floor(searchIndex / limit),
+        regionCode: found.region_code,
+        regionName: found.region_name,
+        provinceCode: found.province_code,
+        provinceName: found.province_name,
       };
     }
   }
