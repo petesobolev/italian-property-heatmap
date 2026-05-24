@@ -602,6 +602,21 @@ export default function RankingsPage() {
             </select>
           </div>
 
+          {(selectedRegion || selectedProvince) && (
+            <div className="filters__group filters__group--reset">
+              <button
+                onClick={() => {
+                  setSelectedRegion(null);
+                  setSelectedProvince(null);
+                  setPage(0);
+                }}
+                className="filters__reset-btn"
+              >
+                Reset Filters
+              </button>
+            </div>
+          )}
+
           <div className="filters__group">
             <label className="filters__label">Data Period</label>
             <div className="filters__buttons">
@@ -1312,6 +1327,28 @@ export default function RankingsPage() {
           background: rgba(196, 120, 92, 0.2);
           border-color: rgba(196, 120, 92, 0.4);
           color: #e8c4a0;
+        }
+
+        .filters__group--reset {
+          display: flex;
+          align-items: flex-end;
+        }
+
+        .filters__reset-btn {
+          padding: 8px 16px;
+          background: transparent;
+          border: 1px solid rgba(255, 255, 255, 0.15);
+          border-radius: 6px;
+          color: #8b95a5;
+          font-size: 0.8rem;
+          cursor: pointer;
+          transition: all 0.15s ease;
+        }
+
+        .filters__reset-btn:hover {
+          background: rgba(255, 255, 255, 0.05);
+          border-color: rgba(255, 255, 255, 0.25);
+          color: #d0d7e2;
         }
 
         /* Main */
