@@ -118,7 +118,6 @@ export default function RankingsPage() {
   const [provinces, setProvinces] = useState<ProvinceOption[]>([]);
   const [selectedRegion, setSelectedRegion] = useState<string | null>(null);
   const [selectedProvince, setSelectedProvince] = useState<string | null>(null);
-  const [semestersToAverage, setSemestersToAverage] = useState(2);
 
   // Search state
   const [searchQuery, setSearchQuery] = useState("");
@@ -164,7 +163,6 @@ export default function RankingsPage() {
         sortOrder,
         limit: String(limit),
         offset: String(page * limit),
-        semestersToAverage: String(semestersToAverage),
       });
 
       // Use override values if provided, otherwise use state
@@ -194,7 +192,7 @@ export default function RankingsPage() {
       setLoading(false);
       setIsSearching(false);
     }
-  }, [sortBy, sortOrder, page, selectedRegion, selectedProvince, semestersToAverage]);
+  }, [sortBy, sortOrder, page, selectedRegion, selectedProvince]);
 
   useEffect(() => {
     fetchRankings();
@@ -227,11 +225,6 @@ export default function RankingsPage() {
     setSearchResult(null);
     setSearchedMunicipality(null);
     setSearchQuery("");
-  };
-
-  const handleSemestersChange = (semesters: number) => {
-    setSemestersToAverage(semesters);
-    setPage(0);
   };
 
   // Fetch autocomplete suggestions
@@ -617,25 +610,6 @@ export default function RankingsPage() {
             </div>
           )}
 
-          <div className="filters__group">
-            <label className="filters__label">Data Period</label>
-            <div className="filters__buttons">
-              {[
-                { value: 1, label: "Latest" },
-                { value: 2, label: "1 year" },
-                { value: 3, label: "18mo" },
-                { value: 4, label: "2 years" },
-              ].map(({ value, label }) => (
-                <button
-                  key={value}
-                  onClick={() => handleSemestersChange(value)}
-                  className={`filters__btn ${semestersToAverage === value ? "filters__btn--active" : ""}`}
-                >
-                  {label}
-                </button>
-              ))}
-            </div>
-          </div>
         </div>
       </div>
 

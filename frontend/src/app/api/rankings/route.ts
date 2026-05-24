@@ -5,10 +5,9 @@ type SortField =
   | "value_mid_eur_sqm"
   | "gross_yield_pct"
   | "annualized_price_change_pct"
-  | "ntn_per_1000_pop"
-  | "data_quality_score";
+  | "ntn_per_1000_pop";
 
-interface RankingRow {
+interface CacheRow {
   municipality_id: string;
   municipality_name: string;
   region_code: string;
@@ -22,10 +21,10 @@ interface RankingRow {
   gross_yield_pct: number | null;
   annualized_price_change_pct: number | null;
   ntn_per_1000_pop: number | null;
-  data_quality_score: number | null;
   zones_with_data: number | null;
   latest_period: string;
   earliest_period: string;
+  periods_count: number;
 }
 
 export async function GET(request: Request) {
@@ -38,48 +37,45 @@ export async function GET(request: Request) {
   const offset = Number(searchParams.get("offset") ?? "0");
   const regionCode = searchParams.get("region") || null;
   const provinceCode = searchParams.get("province") || null;
-  const minConfidence = Number(searchParams.get("minConfidence") ?? "0");
-  const segment = searchParams.get("segment") ?? "residential";
-  const semestersToAverage = Math.min(4, Math.max(1, Number(searchParams.get("semestersToAverage") ?? "2")));
   const searchQuery = searchParams.get("search")?.toLowerCase().trim();
 
   const supabase = createSupabaseServerClient();
 
-  // Use the comprehensive RPC function that handles all aggregation server-side
-  // Need to paginate to work around PostgREST's max rows limit (1000)
-  const PAGE_SIZE = 1000;
-  let allData: RankingRow[] = [];
-  let pageOffset = 0;
-  let hasMore = true;
+  // Build base query on the materialized view
+  let query = supabase
+    .schema("mart")
+    .from("municipality_rankings_cache")
+    .select("*", { count: "exact" });
 
-  while (hasMore) {
-    const { data: pageData, error: pageError } = await supabase
-      .schema("mart")
-      .rpc("get_municipality_rankings", {
-        p_segment: segment,
-        p_num_semesters: semestersToAverage,
-        p_region_code: regionCode,
-        p_province_code: provinceCode,
-        p_min_confidence: minConfidence,
-      })
-      .range(pageOffset, pageOffset + PAGE_SIZE - 1);
-
-    if (pageError) {
-      console.error("Rankings RPC error:", pageError);
-      return NextResponse.json({ error: pageError.message }, { status: 500 });
-    }
-
-    const rows = (pageData ?? []) as RankingRow[];
-    allData = allData.concat(rows);
-
-    if (rows.length < PAGE_SIZE) {
-      hasMore = false;
-    } else {
-      pageOffset += PAGE_SIZE;
-    }
+  // Apply filters
+  if (regionCode) {
+    query = query.eq("region_code", regionCode);
+  }
+  if (provinceCode) {
+    query = query.eq("province_code", provinceCode);
   }
 
-  if (allData.length === 0) {
+  // Apply sorting
+  const sortColumn = sortBy;
+  query = query.order(sortColumn, {
+    ascending: sortOrder,
+    nullsFirst: false
+  });
+
+  // Apply pagination
+  query = query.range(offset, offset + limit - 1);
+
+  const { data, error, count } = await query;
+
+  if (error) {
+    console.error("Rankings cache query error:", error);
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+
+  const rows = (data ?? []) as CacheRow[];
+  const totalCount = count ?? 0;
+
+  if (rows.length === 0) {
     return NextResponse.json({
       rankings: [],
       pagination: { total: 0, limit, offset, hasMore: false },
@@ -89,57 +85,16 @@ export async function GET(request: Request) {
         latestPeriod: null,
         earliestPeriod: null,
         periodsIncluded: [],
-        segment,
-        filters: { region: regionCode, province: provinceCode, minConfidence },
+        segment: "residential",
+        filters: { region: regionCode, province: provinceCode },
       },
       searchResult: null,
     });
   }
 
-  // Get period info from first row (all rows have same period info)
-  const latestPeriod = allData[0].latest_period;
-  const earliestPeriod = allData[0].earliest_period;
-
-  // Sort the results based on requested sort field and order
-  const sortedData = [...allData].sort((a, b) => {
-    let aVal: number | null;
-    let bVal: number | null;
-
-    switch (sortBy) {
-      case "value_mid_eur_sqm":
-        aVal = a.value_mid_eur_sqm;
-        bVal = b.value_mid_eur_sqm;
-        break;
-      case "gross_yield_pct":
-        aVal = a.gross_yield_pct;
-        bVal = b.gross_yield_pct;
-        break;
-      case "annualized_price_change_pct":
-        aVal = a.annualized_price_change_pct;
-        bVal = b.annualized_price_change_pct;
-        break;
-      case "ntn_per_1000_pop":
-        aVal = a.ntn_per_1000_pop;
-        bVal = b.ntn_per_1000_pop;
-        break;
-      case "data_quality_score":
-        aVal = a.data_quality_score;
-        bVal = b.data_quality_score;
-        break;
-      default:
-        aVal = a.value_mid_eur_sqm;
-        bVal = b.value_mid_eur_sqm;
-    }
-
-    // Handle nulls - push to end
-    if (aVal == null && bVal == null) return 0;
-    if (aVal == null) return 1;
-    if (bVal == null) return -1;
-
-    return sortOrder ? aVal - bVal : bVal - aVal;
-  });
-
-  const totalCount = sortedData.length;
+  // Get period info from first row
+  const latestPeriod = rows[0].latest_period;
+  const earliestPeriod = rows[0].earliest_period;
 
   // Handle municipality search - find rank of searched municipality
   let searchResult: {
@@ -154,18 +109,67 @@ export async function GET(request: Request) {
   } | null = null;
 
   if (searchQuery) {
-    // Find municipality by name (partial match)
-    const searchIndex = sortedData.findIndex((m) =>
-      m.municipality_name.toLowerCase().includes(searchQuery)
-    );
+    // Use a separate query to find the search result with its rank
+    // This query finds municipalities matching the search and returns the highest-ranked one
+    let searchRankQuery = supabase
+      .schema("mart")
+      .from("municipality_rankings_cache")
+      .select("municipality_id, municipality_name, region_code, region_name, province_code, province_name, value_mid_eur_sqm, gross_yield_pct, annualized_price_change_pct, ntn_per_1000_pop")
+      .ilike("municipality_name", `%${searchQuery}%`);
 
-    if (searchIndex !== -1) {
-      const found = sortedData[searchIndex];
+    // Apply same filters as main query
+    if (regionCode) {
+      searchRankQuery = searchRankQuery.eq("region_code", regionCode);
+    }
+    if (provinceCode) {
+      searchRankQuery = searchRankQuery.eq("province_code", provinceCode);
+    }
+
+    // Order by the same sort column to get the highest-ranked match
+    searchRankQuery = searchRankQuery.order(sortBy, {
+      ascending: sortOrder,
+      nullsFirst: false
+    });
+
+    const { data: searchData } = await searchRankQuery.limit(1);
+
+    if (searchData && searchData.length > 0) {
+      const found = searchData[0];
+
+      // Count how many municipalities rank higher than this one
+      let rankQuery = supabase
+        .schema("mart")
+        .from("municipality_rankings_cache")
+        .select("municipality_id", { count: "exact", head: true });
+
+      // Apply same filters
+      if (regionCode) {
+        rankQuery = rankQuery.eq("region_code", regionCode);
+      }
+      if (provinceCode) {
+        rankQuery = rankQuery.eq("province_code", provinceCode);
+      }
+
+      // Count items with better rank based on sort
+      const sortValue = found[sortBy as keyof typeof found] as number | null;
+      if (sortValue !== null) {
+        if (sortOrder) {
+          // Ascending: count items with lower value
+          rankQuery = rankQuery.lt(sortBy, sortValue);
+        } else {
+          // Descending: count items with higher value
+          rankQuery = rankQuery.gt(sortBy, sortValue);
+        }
+      }
+
+      const { count: higherRanked } = await rankQuery;
+      const rank = (higherRanked ?? 0) + 1;
+
       searchResult = {
         municipalityId: found.municipality_id,
         name: found.municipality_name,
-        rank: searchIndex + 1,
-        page: Math.floor(searchIndex / limit),
+        rank,
+        page: Math.floor((rank - 1) / limit),
         regionCode: found.region_code,
         regionName: found.region_name,
         provinceCode: found.province_code,
@@ -174,10 +178,8 @@ export async function GET(request: Request) {
     }
   }
 
-  const paginatedData = sortedData.slice(offset, offset + limit);
-
   // Build final response
-  const rankings = paginatedData.map((m, index) => ({
+  const rankings = rows.map((m, index) => ({
     rank: offset + index + 1,
     municipalityId: m.municipality_id,
     name: m.municipality_name,
@@ -191,7 +193,6 @@ export async function GET(request: Request) {
     grossYieldPct: m.gross_yield_pct,
     annualizedPriceChangePct: m.annualized_price_change_pct,
     salesPer1000Pop: m.ntn_per_1000_pop,
-    dataQualityScore: m.data_quality_score,
     zonesWithData: m.zones_with_data,
   }));
 
@@ -234,11 +235,10 @@ export async function GET(request: Request) {
       latestPeriod,
       earliestPeriod,
       periodsIncluded,
-      segment,
+      segment: "residential",
       filters: {
         region: regionCode,
         province: provinceCode,
-        minConfidence,
       },
     },
     searchResult,
