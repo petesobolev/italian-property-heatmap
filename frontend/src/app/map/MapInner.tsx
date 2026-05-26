@@ -978,6 +978,10 @@ export function MapInner() {
         return `${Math.round(value)} pts`;
       case "confidence_score":
         return `${Math.round(value)}% confidence`;
+      case "foreign_ratio":
+        return `${value.toFixed(1)}% foreign`;
+      case "population_growth_rate":
+        return `${value >= 0 ? "+" : ""}${value.toFixed(1)}% YoY`;
       default:
         return value.toLocaleString();
     }
