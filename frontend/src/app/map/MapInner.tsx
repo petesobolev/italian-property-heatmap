@@ -1153,6 +1153,7 @@ export function MapInner() {
       {/* Zone indicator - hide for municipality-only metrics that don't have zone data */}
       {effectiveMunicipalityId && currentZoom >= 11 && ![
         "foreign_ratio",
+        "population_growth_rate",
         "vehicle_arson_rate",
         "forecast_appreciation_pct",
         "forecast_gross_yield_pct",

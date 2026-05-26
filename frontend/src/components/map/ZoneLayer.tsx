@@ -160,6 +160,7 @@ export function ZoneLayer({ municipalityId, visible, metric = "value_mid_eur_sqm
     // These are municipality-level only: demographics, forecasts, crime stats
     const municipalityOnlyMetrics = [
       "foreign_ratio",
+      "population_growth_rate",
       "vehicle_arson_rate",
       "forecast_appreciation_pct",
       "forecast_gross_yield_pct",
@@ -300,23 +301,23 @@ export function ZoneLayer({ municipalityId, visible, metric = "value_mid_eur_sqm
     const disableBackgroundPointerEvents = () => {
       if (!geoJsonRef.current) return;
 
-      // Find the background zone's layer and disable its pointer events via CSS
+      // Find the background zone's layer and disable its pointer events via CSS class
       geoJsonRef.current.eachLayer((layer) => {
         const pathLayer = layer as L.Path & { feature?: Feature; getElement?: () => SVGElement | null };
         const props = pathLayer.feature?.properties as ZoneProperties | undefined;
         if (props?.zone_code === backgroundZoneCode) {
-          // Get the SVG element and disable pointer events
+          // Add class to disable pointer events
           const element = pathLayer.getElement?.();
           if (element) {
-            element.style.pointerEvents = "none";
+            element.classList.add("zone-background-noninteractive");
           }
         }
       });
     };
 
-    // Defer to ensure SVG elements are rendered
-    const frameId = requestAnimationFrame(disableBackgroundPointerEvents);
-    return () => cancelAnimationFrame(frameId);
+    // Defer to ensure SVG elements are rendered - use setTimeout for more reliable timing
+    const timeoutId = setTimeout(disableBackgroundPointerEvents, 100);
+    return () => clearTimeout(timeoutId);
   }, [zones, backgroundZoneCode, valueDomain]);
 
   // Event handlers for each zone feature - needs metric for tooltip formatting
@@ -444,6 +445,11 @@ export function ZoneLayer({ municipalityId, visible, metric = "value_mid_eur_sqm
 
         .zone-tooltip::before {
           display: none;
+        }
+
+        /* Make background zones (R-type) non-interactive so smaller zones can capture events */
+        .zone-background-noninteractive {
+          pointer-events: none !important;
         }
 
         .zone-label {
