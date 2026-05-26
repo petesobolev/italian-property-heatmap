@@ -780,7 +780,7 @@ export function MapInner() {
     styleRef.current = style;
   }, [style]);
 
-  // Clean up tooltips when GeoJSON data or metric changes to prevent ghost tooltips
+  // Clean up tooltips when GeoJSON data changes to prevent ghost tooltips
   useEffect(() => {
     if (activeTooltipLayerRef.current) {
       activeTooltipLayerRef.current.closeTooltip();
@@ -792,7 +792,7 @@ export function MapInner() {
     } catch {
       // Ignore errors if no tooltip is open
     }
-  }, [geojson, valuesByMunicipality, filters.metric]);
+  }, [geojson, valuesByMunicipality]);
 
   // Zoom change handler
   const handleZoomChange = useCallback((zoom: number) => {
