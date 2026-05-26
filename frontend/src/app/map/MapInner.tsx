@@ -212,19 +212,25 @@ function MapRefCapture({
 
   // Close active tooltip when map drag/zoom starts to prevent stuck tooltips
   useEffect(() => {
-    const handleDragStart = () => {
+    const closeAllTooltips = () => {
+      // Close tracked tooltip
       if (activeTooltipLayerRef.current) {
         activeTooltipLayerRef.current.closeTooltip();
         activeTooltipLayerRef.current = null;
       }
+      // Also close any tooltip on the map (catches orphaned ones)
+      map.closeTooltip();
     };
 
-    map.on("dragstart", handleDragStart);
-    map.on("zoomstart", handleDragStart);
+    map.on("dragstart", closeAllTooltips);
+    map.on("zoomstart", closeAllTooltips);
+    // Also close on regular clicks (user clicking elsewhere)
+    map.on("click", closeAllTooltips);
 
     return () => {
-      map.off("dragstart", handleDragStart);
-      map.off("zoomstart", handleDragStart);
+      map.off("dragstart", closeAllTooltips);
+      map.off("zoomstart", closeAllTooltips);
+      map.off("click", closeAllTooltips);
     };
   }, [map, activeTooltipLayerRef]);
 
@@ -770,13 +776,17 @@ export function MapInner() {
     styleRef.current = style;
   }, [style]);
 
-  // Clean up active tooltip ref when GeoJSON data changes to prevent ghost tooltips
+  // Clean up tooltips when GeoJSON data or metric changes to prevent ghost tooltips
   useEffect(() => {
     if (activeTooltipLayerRef.current) {
       activeTooltipLayerRef.current.closeTooltip();
       activeTooltipLayerRef.current = null;
     }
-  }, [geojson, valuesByMunicipality]);
+    // Also close any orphaned tooltips via the map ref
+    if (mapRef.current) {
+      mapRef.current.closeTooltip();
+    }
+  }, [geojson, valuesByMunicipality, filters.metric]);
 
   // Zoom change handler
   const handleZoomChange = useCallback((zoom: number) => {
