@@ -52,36 +52,110 @@ def get_db_connection():
     )
 
 
+def detect_csv_format(csv_file: Path) -> dict:
+    """Detect the CSV format (delimiter, column positions) by reading the header."""
+    with open(csv_file, 'r', encoding='utf-8-sig') as f:
+        # Skip first line (description)
+        f.readline()
+        header_line = f.readline().strip()
+
+    # Check delimiter
+    if ';' in header_line:
+        delimiter = ';'
+        headers = [h.strip('"') for h in header_line.split(';')]
+    else:
+        delimiter = ','
+        headers = [h.strip('"') for h in header_line.split(',')]
+
+    # Find column indices for the data we need
+    # Look for columns by common patterns
+    col_indices = {}
+
+    for i, h in enumerate(headers):
+        h_lower = h.lower()
+        if 'codice' in h_lower or 'municipality code' in h_lower:
+            col_indices['code'] = i
+        elif h_lower in ('comune', 'municipality'):
+            col_indices['name'] = i
+        elif h_lower in ('età', 'age'):
+            col_indices['age'] = i
+        elif h_lower == 'totale maschi' or h_lower == 'total males':
+            col_indices['males'] = i
+        elif h_lower == 'totale femmine' or h_lower == 'total females':
+            col_indices['females'] = i
+        elif h_lower == 'totale' or h_lower == 'total':
+            col_indices['total'] = i
+
+    return {
+        'delimiter': delimiter,
+        'columns': col_indices,
+        'header_count': len(headers),
+    }
+
+
 def process_posas_files(folder_path: Path) -> pd.DataFrame:
     """Process POSAS CSV files and aggregate population by municipality."""
     all_data = []
 
-    # Prefer the national municipalities file if it exists (contains all data)
-    national_file = folder_path / 'POSAS_2026_en_Municipalities.csv'
-    if national_file.exists():
-        csv_files = [national_file]
-        logger.info("Using national municipalities file")
-    else:
-        # Fall back to province files, excluding the national file
-        csv_files = [f for f in folder_path.glob('POSAS_*_*.csv') if 'Municipalities' not in f.name]
+    # Find CSV files - prefer national file, otherwise use province files
+    # Support both English and Italian naming patterns
+    csv_files = []
+    for pattern in ['POSAS_*_Municipalities.csv', 'POSAS_*_it_Comuni.csv']:
+        national_files = list(folder_path.glob(pattern))
+        if national_files:
+            csv_files = national_files
+            logger.info(f"Using national municipalities file: {national_files[0].name}")
+            break
+
+    if not csv_files:
+        # Fall back to province files
+        csv_files = [f for f in folder_path.glob('POSAS_*.csv')
+                     if 'Municipalities' not in f.name and 'Comuni' not in f.name]
         logger.info(f"Found {len(csv_files)} province CSV files")
+
+    # Detect format from first file
+    if not csv_files:
+        logger.error("No CSV files found")
+        return pd.DataFrame()
+
+    fmt = detect_csv_format(csv_files[0])
+    logger.info(f"Detected format: delimiter='{fmt['delimiter']}', columns={fmt['columns']}")
+
+    required_cols = ['code', 'name', 'age', 'males', 'females', 'total']
+    missing = [c for c in required_cols if c not in fmt['columns']]
+    if missing:
+        logger.error(f"Missing required columns: {missing}")
+        return pd.DataFrame()
 
     for csv_file in csv_files:
         try:
-            # Read CSV, skip the header row with the description
-            df = pd.read_csv(csv_file, skiprows=1, encoding='utf-8-sig')
+            # Read CSV with detected delimiter, skip the description row
+            df = pd.read_csv(
+                csv_file,
+                skiprows=1,
+                encoding='utf-8-sig',
+                delimiter=fmt['delimiter'],
+                dtype=str,  # Read all as string first
+                quotechar='"',
+            )
 
-            # Standardize column names
-            df.columns = ['municipality_code', 'municipality_name', 'age', 'males', 'females', 'total']
+            # Select and rename columns based on detected positions
+            col_map = fmt['columns']
+            df_subset = df.iloc[:, [col_map['code'], col_map['name'], col_map['age'],
+                                     col_map['males'], col_map['females'], col_map['total']]].copy()
+            df_subset.columns = ['municipality_code', 'municipality_name', 'age', 'males', 'females', 'total']
+
+            # Convert numeric columns
+            for col in ['age', 'males', 'females', 'total']:
+                df_subset[col] = pd.to_numeric(df_subset[col], errors='coerce')
 
             # Filter to only the total rows (age=999 contains the sum for each municipality)
-            # This avoids double-counting individual ages
-            totals = df[df['age'] == 999].copy()
+            totals = df_subset[df_subset['age'] == 999].copy()
 
             if len(totals) == 0:
                 # Fallback: if no age=999 rows, aggregate manually (excluding any notes)
-                df = df[df['municipality_code'].astype(str).str.match(r'^\d+$', na=False)]
-                totals = df.groupby(['municipality_code', 'municipality_name']).agg({
+                df_clean = df_subset[df_subset['municipality_code'].str.match(r'^\d+$', na=False)]
+                totals = df_clean.groupby(['municipality_code', 'municipality_name']).agg({
                     'males': 'sum',
                     'females': 'sum',
                     'total': 'sum'
@@ -91,6 +165,8 @@ def process_posas_files(folder_path: Path) -> pd.DataFrame:
 
         except Exception as e:
             logger.error(f"Error processing {csv_file}: {e}")
+            import traceback
+            logger.debug(traceback.format_exc())
 
     if not all_data:
         return pd.DataFrame()
@@ -138,7 +214,7 @@ def load_to_database(conn, df: pd.DataFrame, reference_year: int):
                 int(row['total']),
                 int(row['males']),
                 int(row['females']),
-                'POSAS_2026_en'
+                f'POSAS_{reference_year}'
             ))
             loaded += 1
 

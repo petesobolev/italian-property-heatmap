@@ -126,6 +126,16 @@ const COLOR_SCALES: Record<MetricType, { stops: number[][]; noData: string }> = 
     ],
     noData: "#2a2d35",
   },
+  population_growth_rate: {
+    stops: [
+      [180, 50, 50],    // Dark red (declining fast, -3% or worse)
+      [220, 120, 100],  // Light red (declining, -1%)
+      [180, 180, 180],  // Neutral gray (0% change)
+      [100, 180, 100],  // Light green (+1%)
+      [50, 140, 50],    // Dark green (growing fast, +3% or better)
+    ],
+    noData: "#2a2d35",
+  },
 };
 
 // Dark map tiles for premium feel

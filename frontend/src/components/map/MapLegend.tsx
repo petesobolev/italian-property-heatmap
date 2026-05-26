@@ -80,6 +80,13 @@ const METRIC_CONFIG: Record<
     colors: ["#f0f9ff", "#bae6fd", "#38bdf8", "#0284c7", "#075985"],
     fixedRange: { min: 0, max: 25 },
   },
+  population_growth_rate: {
+    label: "Population Trend",
+    unit: "% YoY",
+    format: (v) => `${v >= 0 ? "+" : ""}${v.toFixed(1)}%`,
+    colors: ["#b43232", "#dc7864", "#b4b4b4", "#64b464", "#328c32"],
+    fixedRange: { min: -3, max: 3 },
+  },
 };
 
 export function MapLegend({ metric, min, max, isLoading }: MapLegendProps) {

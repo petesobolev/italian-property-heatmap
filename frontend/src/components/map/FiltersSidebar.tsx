@@ -11,7 +11,8 @@ export type MetricType =
   | "forecast_gross_yield_pct"
   | "opportunity_score"
   | "confidence_score"
-  | "foreign_ratio";
+  | "foreign_ratio"
+  | "population_growth_rate";
 
 export interface FiltersState {
   metric: MetricType;
@@ -92,6 +93,12 @@ const METRICS: { value: MetricType; label: string; icon: string; description: st
     label: "Foreign Residents",
     icon: "🌍",
     description: "% of population",
+  },
+  {
+    value: "population_growth_rate",
+    label: "Population Trend",
+    icon: "📈",
+    description: "Annual change (%)",
   },
 ];
 
