@@ -85,7 +85,7 @@ const METRIC_CONFIG: Record<
     unit: "% YoY",
     format: (v) => `${v >= 0 ? "+" : ""}${v.toFixed(1)}%`,
     colors: ["#b43232", "#dc7864", "#b4b4b4", "#64b464", "#328c32"],
-    fixedRange: { min: -3, max: 3 },
+    // No fixedRange - use dynamic range based on viewport data
   },
 };
 
