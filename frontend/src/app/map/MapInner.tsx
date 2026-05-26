@@ -219,7 +219,11 @@ function MapRefCapture({
         activeTooltipLayerRef.current = null;
       }
       // Also close any tooltip on the map (catches orphaned ones)
-      map.closeTooltip();
+      try {
+        map.closeTooltip();
+      } catch {
+        // Ignore errors if no tooltip is open
+      }
     };
 
     map.on("dragstart", closeAllTooltips);
@@ -783,8 +787,10 @@ export function MapInner() {
       activeTooltipLayerRef.current = null;
     }
     // Also close any orphaned tooltips via the map ref
-    if (mapRef.current) {
-      mapRef.current.closeTooltip();
+    try {
+      mapRef.current?.closeTooltip();
+    } catch {
+      // Ignore errors if no tooltip is open
     }
   }, [geojson, valuesByMunicipality, filters.metric]);
 
