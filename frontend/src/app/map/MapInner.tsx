@@ -35,7 +35,8 @@ const FLAT_TAX_ELIGIBLE_REGIONS = new Set([
 ]);
 
 // Color scales for different metrics
-const COLOR_SCALES: Record<MetricType, { stops: number[][]; noData: string }> = {
+// fixedRange: Use fixed min/max instead of data-driven range (matches MapLegend config)
+const COLOR_SCALES: Record<MetricType, { stops: number[][]; noData: string; fixedRange?: { min: number; max: number } }> = {
   value_mid_eur_sqm: {
     stops: [
       [30, 58, 95],    // Deep Mediterranean blue
@@ -65,6 +66,7 @@ const COLOR_SCALES: Record<MetricType, { stops: number[][]; noData: string }> = 
       [179, 0, 0],      // Deep red (high yield)
     ],
     noData: "#2a2d35",
+    fixedRange: { min: 0, max: 15 },
   },
   price_variance_pct: {
     stops: [
@@ -75,6 +77,7 @@ const COLOR_SCALES: Record<MetricType, { stops: number[][]; noData: string }> = 
       [215, 48, 39],    // Red (high variance - uncertain)
     ],
     noData: "#2a2d35",
+    fixedRange: { min: 0, max: 100 },
   },
   forecast_appreciation_pct: {
     stops: [
@@ -85,6 +88,7 @@ const COLOR_SCALES: Record<MetricType, { stops: number[][]; noData: string }> = 
       [22, 101, 52],   // Deep green (positive)
     ],
     noData: "#2a2d35",
+    fixedRange: { min: -10, max: 10 },
   },
   forecast_gross_yield_pct: {
     stops: [
@@ -95,6 +99,7 @@ const COLOR_SCALES: Record<MetricType, { stops: number[][]; noData: string }> = 
       [146, 64, 14],
     ],
     noData: "#2a2d35",
+    fixedRange: { min: 0, max: 10 },
   },
   opportunity_score: {
     stops: [
@@ -105,6 +110,7 @@ const COLOR_SCALES: Record<MetricType, { stops: number[][]; noData: string }> = 
       [245, 235, 224],
     ],
     noData: "#2a2d35",
+    fixedRange: { min: 0, max: 100 },
   },
   confidence_score: {
     stops: [
@@ -115,6 +121,7 @@ const COLOR_SCALES: Record<MetricType, { stops: number[][]; noData: string }> = 
       [209, 213, 219],
     ],
     noData: "#2a2d35",
+    fixedRange: { min: 0, max: 100 },
   },
   foreign_ratio: {
     stops: [
@@ -125,6 +132,7 @@ const COLOR_SCALES: Record<MetricType, { stops: number[][]; noData: string }> = 
       [7, 89, 133],     // Deep blue (highest %)
     ],
     noData: "#2a2d35",
+    fixedRange: { min: 0, max: 25 },
   },
   population_growth_rate: {
     stops: [
@@ -135,6 +143,7 @@ const COLOR_SCALES: Record<MetricType, { stops: number[][]; noData: string }> = 
       [50, 140, 50],    // Dark green (growing fast, +3% or better)
     ],
     noData: "#2a2d35",
+    fixedRange: { min: -3, max: 3 },
   },
 };
 
@@ -661,7 +670,9 @@ export function MapInner() {
       const scale = COLOR_SCALES[filters.metric];
       if (typeof v !== "number" || !Number.isFinite(v)) return scale.noData;
 
-      const { min, max } = valueDomain;
+      // Use fixed range if defined, otherwise fall back to data-driven range
+      const min = scale.fixedRange?.min ?? valueDomain.min;
+      const max = scale.fixedRange?.max ?? valueDomain.max;
       if (max === min) return scale.noData;
 
       const t = Math.max(0, Math.min(1, (v - min) / (max - min)));
