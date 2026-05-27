@@ -62,7 +62,6 @@ const COLOR_SCALES: Record<string, number[][]> = {
 
 // Fixed ranges for certain metrics
 const FIXED_RANGES: Record<string, { min: number; max: number }> = {
-  gross_yield_pct: { min: 0, max: 15 },
   price_variance_pct: { min: 0, max: 100 },
 };
 

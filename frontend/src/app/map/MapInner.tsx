@@ -66,7 +66,7 @@ const COLOR_SCALES: Record<MetricType, { stops: number[][]; noData: string; fixe
       [179, 0, 0],      // Deep red (high yield)
     ],
     noData: "#2a2d35",
-    fixedRange: { min: 0, max: 15 },
+    // No fixedRange - use dynamic range based on viewport data
   },
   price_variance_pct: {
     stops: [

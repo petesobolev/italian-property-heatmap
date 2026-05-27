@@ -36,7 +36,7 @@ const METRIC_CONFIG: Record<
     unit: "%",
     format: (v) => `${v.toFixed(1)}%`,
     colors: ["#fef0d9", "#fdcc8a", "#fc8d59", "#e34a33", "#b30000"],
-    fixedRange: { min: 0, max: 15 },
+    // No fixedRange - use dynamic range based on viewport data
   },
   price_variance_pct: {
     label: "Price Spread",
