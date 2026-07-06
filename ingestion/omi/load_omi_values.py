@@ -18,7 +18,9 @@ import json
 import logging
 import os
 import re
+import signal
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime
@@ -48,6 +50,55 @@ OMI_BASE_URL = "https://www1.agenziaentrate.gov.it/servizi/geopoi_omi/"
 REQUEST_DELAY_SECONDS = 1.5  # Respectful rate limiting
 MAX_RETRIES = 3
 RETRY_DELAY_SECONDS = 5
+HTTP_TIMEOUT_SECONDS = 20  # Shorter timeout, fail fast and retry
+MUNICIPALITY_TIMEOUT_SECONDS = 300  # 5 minutes max per municipality
+STALL_DETECTION_SECONDS = 120  # Log warning if no progress for 2 minutes
+
+
+class ProgressTracker:
+    """Track progress and detect stalls in long-running operations."""
+
+    def __init__(self):
+        self._last_activity = time.time()
+        self._last_logged_stall = 0
+        self._current_operation = ""
+        self._lock = threading.Lock()
+
+    def heartbeat(self, operation: str = ""):
+        """Record activity to reset stall timer."""
+        with self._lock:
+            self._last_activity = time.time()
+            if operation:
+                self._current_operation = operation
+
+    def check_stall(self) -> Optional[float]:
+        """
+        Check if operation has stalled.
+        Returns seconds since last activity if stalled, None otherwise.
+        """
+        with self._lock:
+            elapsed = time.time() - self._last_activity
+            if elapsed > STALL_DETECTION_SECONDS:
+                # Only log every STALL_DETECTION_SECONDS to avoid spam
+                if time.time() - self._last_logged_stall > STALL_DETECTION_SECONDS:
+                    self._last_logged_stall = time.time()
+                    return elapsed
+            return None
+
+    def get_current_operation(self) -> str:
+        """Get description of current operation."""
+        with self._lock:
+            return self._current_operation
+
+    def seconds_since_activity(self) -> float:
+        """Get seconds since last activity."""
+        with self._lock:
+            return time.time() - self._last_activity
+
+
+class MunicipalityTimeoutError(Exception):
+    """Raised when a municipality takes too long to process."""
+    pass
 
 # Property types to focus on (residential)
 RESIDENTIAL_PROPERTY_TYPES = {
@@ -139,13 +190,14 @@ class OMIIngestionError(Exception):
 class OMIClient:
     """Client for interacting with the OMI API and web pages."""
 
-    def __init__(self):
+    def __init__(self, progress_tracker: Optional[ProgressTracker] = None):
         self.session = requests.Session()
         self.session.headers.update({
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
             'Accept': 'application/json, text/html, */*',
             'Accept-Language': 'it-IT,it;q=0.9,en-US;q=0.8,en;q=0.7',
         })
+        self.progress_tracker = progress_tracker
 
     def _make_request(self, url: str, params: Optional[dict] = None,
                       expect_json: bool = True) -> Any:
@@ -153,8 +205,17 @@ class OMIClient:
         for attempt in range(MAX_RETRIES):
             try:
                 time.sleep(REQUEST_DELAY_SECONDS)
-                response = self.session.get(url, params=params, timeout=30)
+
+                # Record heartbeat before request
+                if self.progress_tracker:
+                    self.progress_tracker.heartbeat(f"HTTP request to {url[:60]}...")
+
+                response = self.session.get(url, params=params, timeout=HTTP_TIMEOUT_SECONDS)
                 response.raise_for_status()
+
+                # Record heartbeat after successful response
+                if self.progress_tracker:
+                    self.progress_tracker.heartbeat(f"Got response from {url[:60]}...")
 
                 if expect_json:
                     return response.json()
@@ -163,7 +224,9 @@ class OMIClient:
             except requests.RequestException as e:
                 logger.warning(f"Request failed (attempt {attempt + 1}/{MAX_RETRIES}): {e}")
                 if attempt < MAX_RETRIES - 1:
-                    time.sleep(RETRY_DELAY_SECONDS)
+                    # Shorter retry delay for faster recovery
+                    retry_wait = min(RETRY_DELAY_SECONDS, HTTP_TIMEOUT_SECONDS / 2)
+                    time.sleep(retry_wait)
                 else:
                     raise OMIIngestionError(f"Failed to fetch {url}: {e}")
 
@@ -627,9 +690,9 @@ class DatabaseLoader:
         """Check connection health and reconnect if needed."""
         try:
             # Simple health check
-            self.cursor.execute("SELECT 1")
+            self.cursor.execute("SELECT 1 AS health_check")
             self.cursor.fetchone()
-        except (psycopg2.InterfaceError, psycopg2.OperationalError) as e:
+        except (psycopg2.InterfaceError, psycopg2.OperationalError, psycopg2.ProgrammingError) as e:
             logger.warning(f"Connection lost, reconnecting: {e}")
             self._connect()
             # Re-establish ingestion run context if we had one
@@ -679,6 +742,21 @@ class DatabaseLoader:
         if codcom in self._istat_cache:
             return self._istat_cache[codcom]
 
+        # Retry wrapper for connection issues
+        for attempt in range(3):
+            try:
+                return self._find_istat_code_inner(codcom, comune_name, province_code)
+            except (psycopg2.ProgrammingError, psycopg2.InterfaceError, psycopg2.OperationalError) as e:
+                logger.warning(f"DB error in find_istat_code (attempt {attempt + 1}/3): {e}")
+                if attempt < 2:
+                    time.sleep(1)
+                    self._connect()
+                else:
+                    raise
+        return None
+
+    def _find_istat_code_inner(self, codcom: str, comune_name: str, province_code: str) -> Optional[str]:
+        """Inner implementation of find_istat_code."""
         # Ensure connection is alive
         self._ensure_connection()
 
@@ -890,10 +968,10 @@ class DatabaseLoader:
 
         for segment, property_types in segment_mappings.items():
             try:
-                # Build query with IN clause for property types
+                # Build query with IN clause for property types - include state for condition premium
                 placeholders = ','.join(['%s'] * len(property_types))
                 self.cursor.execute(f"""
-                    SELECT value_min_eur_sqm, value_max_eur_sqm, rent_min_eur_sqm_month, rent_max_eur_sqm_month
+                    SELECT value_min_eur_sqm, value_max_eur_sqm, rent_min_eur_sqm_month, rent_max_eur_sqm_month, state
                     FROM raw.omi_property_values
                     WHERE municipality_id = %s AND period_id = %s AND property_type IN ({placeholders})
                 """, (municipality_id, period_id, *property_types))
@@ -910,13 +988,38 @@ class DatabaseLoader:
                 value_mid = (sum(val_mins + val_maxs) / (len(val_mins) + len(val_maxs))) if (val_mins or val_maxs) else None
                 rent_mid = (sum(rent_mins + rent_maxs) / (len(rent_mins) + len(rent_maxs))) if (rent_mins or rent_maxs) else None
 
+                # Calculate condition premium (OTTIMO vs NORMALE)
+                condition_premium = None
+                ottimo_values = []
+                normale_values = []
+                for r in rows:
+                    val = None
+                    if r['value_min_eur_sqm'] is not None and r['value_max_eur_sqm'] is not None:
+                        val = (r['value_min_eur_sqm'] + r['value_max_eur_sqm']) / 2
+                    elif r['value_min_eur_sqm'] is not None:
+                        val = r['value_min_eur_sqm']
+                    elif r['value_max_eur_sqm'] is not None:
+                        val = r['value_max_eur_sqm']
+
+                    if val is not None:
+                        if r['state'] == 'OTTIMO':
+                            ottimo_values.append(val)
+                        elif r['state'] == 'NORMALE':
+                            normale_values.append(val)
+
+                if ottimo_values and normale_values:
+                    ottimo_avg = sum(ottimo_values) / len(ottimo_values)
+                    normale_avg = sum(normale_values) / len(normale_values)
+                    if normale_avg > 0:
+                        condition_premium = ((ottimo_avg - normale_avg) / normale_avg) * 100
+
                 self.cursor.execute("""
                     INSERT INTO mart.municipality_values_semester (
                         municipality_id, period_id, property_segment,
                         value_min_eur_sqm, value_max_eur_sqm, value_mid_eur_sqm,
                         rent_min_eur_sqm_month, rent_max_eur_sqm_month, rent_mid_eur_sqm_month,
-                        zones_count, zones_with_data, updated_at
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now())
+                        zones_count, zones_with_data, condition_premium_pct, updated_at
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now())
                     ON CONFLICT (municipality_id, period_id, property_segment) DO UPDATE SET
                         value_min_eur_sqm = EXCLUDED.value_min_eur_sqm,
                         value_max_eur_sqm = EXCLUDED.value_max_eur_sqm,
@@ -926,6 +1029,7 @@ class DatabaseLoader:
                         rent_mid_eur_sqm_month = EXCLUDED.rent_mid_eur_sqm_month,
                         zones_count = EXCLUDED.zones_count,
                         zones_with_data = EXCLUDED.zones_with_data,
+                        condition_premium_pct = EXCLUDED.condition_premium_pct,
                         updated_at = now()
                 """, (
                     municipality_id, period_id, segment,
@@ -936,13 +1040,30 @@ class DatabaseLoader:
                     max(rent_maxs) if rent_maxs else None,
                     rent_mid,
                     len(rows),
-                    len(val_mins)
+                    len(val_mins),
+                    condition_premium
                 ))
                 self.conn.commit()
                 logger.debug(f"Aggregated {segment} values for {municipality_id}/{period_id}")
             except Exception as e:
                 self.conn.rollback()
                 logger.warning(f"Failed to aggregate {segment} for {municipality_id}/{period_id}: {e}")
+
+    def delete_raw_municipality_data(self, municipality_id: str, period_id: str):
+        """Delete raw data for a municipality after aggregation to save storage."""
+        self._ensure_connection()
+        try:
+            self.cursor.execute("""
+                DELETE FROM raw.omi_property_values
+                WHERE municipality_id = %s AND period_id = %s
+            """, (municipality_id, period_id))
+            deleted = self.cursor.rowcount
+            self.conn.commit()
+            if deleted > 0:
+                logger.debug(f"Deleted {deleted} raw records for {municipality_id}/{period_id}")
+        except Exception as e:
+            self.conn.rollback()
+            logger.warning(f"Failed to delete raw data for {municipality_id}/{period_id}: {e}")
 
     def close(self):
         """Close database connection."""
@@ -993,6 +1114,7 @@ def run_ingestion(
     skip_loaded: bool = False,
     municipalities: list[str] = None,
     max_retries: int = 3,
+    municipality_timeout: int = MUNICIPALITY_TIMEOUT_SECONDS,
 ):
     """
     Main ingestion function.
@@ -1006,16 +1128,19 @@ def run_ingestion(
         skip_loaded: Skip municipalities that already have data for the requested semester
         municipalities: List of specific ISTAT codes to process (bypasses province iteration)
         max_retries: Maximum retry attempts for failed municipalities
+        municipality_timeout: Max seconds per municipality before auto-skip
     """
     logger.info("=" * 60)
     logger.info("Starting OMI Property Values Ingestion")
+    logger.info(f"Municipality timeout: {municipality_timeout}s, Stall detection: {STALL_DETECTION_SECONDS}s")
     logger.info("=" * 60)
 
     # Load credentials
     db_params = load_env_variables()
 
-    # Initialize clients
-    omi_client = OMIClient()
+    # Initialize progress tracker and clients
+    progress_tracker = ProgressTracker()
+    omi_client = OMIClient(progress_tracker=progress_tracker)
     db_loader = DatabaseLoader(db_params)
 
     # Start ingestion run
@@ -1024,98 +1149,168 @@ def run_ingestion(
     total_loaded = 0
     total_rejected = 0
     failed_municipalities = []  # Track failed municipalities for end-of-run retry
+    timed_out_municipalities = []  # Track municipalities that timed out
 
-    def process_municipality(comune, istat_code: str, com_idx: int, total: int) -> tuple[int, int, bool]:
+    def process_municipality_inner(comune, istat_code: str, result_holder: dict):
         """
-        Process a single municipality with retry logic.
-        Returns (loaded_count, rejected_count, success).
+        Inner function to process a municipality.
+        Results stored in result_holder dict for thread-safe access.
         """
         nonlocal db_loader
         loaded = 0
         rejected = 0
 
-        for attempt in range(1, max_retries + 1):
-            try:
-                # Ensure connection is healthy before starting
-                db_loader._ensure_connection()
+        try:
+            # Record start of municipality processing
+            progress_tracker.heartbeat(f"Starting {comune.name}")
 
-                # Get zones for this comune (using cadastral code for API)
-                zones = omi_client.get_zones(comune.codcom)
+            # Ensure connection is healthy before starting
+            db_loader._ensure_connection()
 
-                if not zones:
-                    logger.debug(f"    No zones found for {comune.codcom}")
-                    return 0, 0, True  # Not an error, just no data
+            # Get zones for this comune (using cadastral code for API)
+            progress_tracker.heartbeat(f"Getting zones for {comune.name}")
+            zones = omi_client.get_zones(comune.codcom)
 
-                # Process each zone
-                for zone in zones:
-                    # Store zone definition (using ISTAT code for database)
-                    db_loader.upsert_omi_zone(zone, istat_code)
+            if not zones:
+                logger.debug(f"    No zones found for {comune.codcom}")
+                result_holder['result'] = (0, 0, True)
+                return
 
-                    if skip_values:
-                        continue
+            # Process each zone
+            for zone_idx, zone in enumerate(zones):
+                progress_tracker.heartbeat(f"{comune.name} zone {zone_idx + 1}/{len(zones)}: {zone.zone_code}")
 
-                    # For each semester, get property values
-                    for semester in semesters:
-                        try:
-                            values = omi_client.get_property_values(
-                                comune.codcom, zone.zone_code, semester
-                            )
+                # Store zone definition (using ISTAT code for database)
+                db_loader.upsert_omi_zone(zone, istat_code)
 
-                            # Update municipality_id to use ISTAT code
-                            for val in values:
-                                val.municipality_id = istat_code
-                                val.omi_zone_id = f"{istat_code}_{zone.zone_code}"
+                if skip_values:
+                    continue
 
-                            if values:
-                                zone_loaded, zone_rejected = db_loader.insert_property_values(values)
-                                loaded += zone_loaded
-                                rejected += zone_rejected
-
-                                if zone_loaded > 0:
-                                    logger.debug(f"      Zone {zone.zone_code}/{semester}: {zone_loaded} values")
-
-                        except OMIIngestionError as e:
-                            logger.debug(f"      Error for zone {zone.zone_code}: {e}")
-                            rejected += 1
-
-                # Aggregate to municipality level
-                if not skip_values:
-                    for semester in semesters:
-                        period_id = f"{semester[:4]}H{semester[4]}"
-                        db_loader.aggregate_municipality_values(istat_code, period_id)
-
-                return loaded, rejected, True
-
-            except (psycopg2.InterfaceError, psycopg2.OperationalError) as e:
-                # Connection error - try to reconnect and retry
-                logger.warning(f"    Connection error for {comune.name} (attempt {attempt}/{max_retries}): {e}")
-                if attempt < max_retries:
-                    wait_time = 2 ** attempt  # Exponential backoff: 2, 4, 8 seconds
-                    logger.info(f"    Waiting {wait_time}s before retry...")
-                    time.sleep(wait_time)
-                    db_loader._connect()
-                else:
-                    logger.error(f"    Failed after {max_retries} attempts: {comune.name}")
-                    return 0, 0, False
-
-            except OMIIngestionError as e:
-                logger.warning(f"    Error processing {comune.name}: {e}")
-                return 0, 0, True  # OMI errors are not retryable
-
-            except Exception as e:
-                # Unexpected error - try reconnect and retry
-                logger.warning(f"    Unexpected error for {comune.name} (attempt {attempt}/{max_retries}): {e}")
-                if attempt < max_retries:
-                    wait_time = 2 ** attempt
-                    logger.info(f"    Waiting {wait_time}s before retry...")
-                    time.sleep(wait_time)
+                # For each semester, get property values
+                for semester in semesters:
                     try:
+                        progress_tracker.heartbeat(f"{comune.name}/{zone.zone_code}/{semester}")
+                        values = omi_client.get_property_values(
+                            comune.codcom, zone.zone_code, semester
+                        )
+
+                        # Update municipality_id to use ISTAT code
+                        for val in values:
+                            val.municipality_id = istat_code
+                            val.omi_zone_id = f"{istat_code}_{zone.zone_code}"
+
+                        if values:
+                            zone_loaded, zone_rejected = db_loader.insert_property_values(values)
+                            loaded += zone_loaded
+                            rejected += zone_rejected
+
+                            if zone_loaded > 0:
+                                logger.debug(f"      Zone {zone.zone_code}/{semester}: {zone_loaded} values")
+
+                    except OMIIngestionError as e:
+                        logger.debug(f"      Error for zone {zone.zone_code}: {e}")
+                        rejected += 1
+
+            # Aggregate to municipality level and clean up raw data
+            if not skip_values:
+                for semester in semesters:
+                    progress_tracker.heartbeat(f"Aggregating {comune.name}/{semester}")
+                    period_id = f"{semester[:4]}H{semester[4]}"
+                    db_loader.aggregate_municipality_values(istat_code, period_id)
+                    # Delete raw data after aggregation to save storage
+                    db_loader.delete_raw_municipality_data(istat_code, period_id)
+
+            result_holder['result'] = (loaded, rejected, True)
+
+        except (psycopg2.InterfaceError, psycopg2.OperationalError) as e:
+            result_holder['error'] = ('connection', e)
+        except OMIIngestionError as e:
+            result_holder['error'] = ('omi', e)
+        except Exception as e:
+            result_holder['error'] = ('unexpected', e)
+
+    def process_municipality(comune, istat_code: str, com_idx: int, total: int) -> tuple[int, int, bool]:
+        """
+        Process a single municipality with retry logic and timeout.
+        Returns (loaded_count, rejected_count, success).
+        """
+        nonlocal db_loader
+
+        for attempt in range(1, max_retries + 1):
+            result_holder = {}
+            start_time = time.time()
+
+            # Run processing in a thread so we can enforce timeout
+            thread = threading.Thread(
+                target=process_municipality_inner,
+                args=(comune, istat_code, result_holder)
+            )
+            thread.daemon = True
+            thread.start()
+
+            # Wait with periodic stall checks
+            check_interval = min(30, STALL_DETECTION_SECONDS / 2)
+            elapsed = 0
+
+            while thread.is_alive() and elapsed < municipality_timeout:
+                thread.join(timeout=check_interval)
+                elapsed = time.time() - start_time
+
+                # Check for stalls
+                stall_time = progress_tracker.check_stall()
+                if stall_time:
+                    current_op = progress_tracker.get_current_operation()
+                    logger.warning(f"    STALL DETECTED: No progress for {stall_time:.0f}s - last operation: {current_op}")
+
+            # Check if thread is still running (timeout occurred)
+            if thread.is_alive():
+                logger.error(f"    TIMEOUT: {comune.name} exceeded {municipality_timeout}s limit after {elapsed:.0f}s")
+                logger.error(f"    Last operation: {progress_tracker.get_current_operation()}")
+                # Thread will be abandoned (daemon thread will be killed when main thread exits)
+                # But we need to create fresh connections since the timed-out thread may have left them in bad state
+                try:
+                    db_loader._connect()
+                except Exception:
+                    pass
+                return 0, 0, False
+
+            # Thread completed - check results
+            if 'result' in result_holder:
+                return result_holder['result']
+
+            if 'error' in result_holder:
+                error_type, error = result_holder['error']
+
+                if error_type == 'connection':
+                    logger.warning(f"    Connection error for {comune.name} (attempt {attempt}/{max_retries}): {error}")
+                    if attempt < max_retries:
+                        wait_time = 2 ** attempt
+                        logger.info(f"    Waiting {wait_time}s before retry...")
+                        time.sleep(wait_time)
                         db_loader._connect()
-                    except Exception:
-                        pass  # Will fail on next attempt if still broken
-                else:
-                    logger.error(f"    Failed after {max_retries} attempts: {comune.name}")
-                    return 0, 0, False
+                        continue
+                    else:
+                        logger.error(f"    Failed after {max_retries} attempts: {comune.name}")
+                        return 0, 0, False
+
+                elif error_type == 'omi':
+                    logger.warning(f"    OMI error processing {comune.name}: {error}")
+                    return 0, 0, True  # OMI errors are not retryable
+
+                else:  # unexpected
+                    logger.warning(f"    Unexpected error for {comune.name} (attempt {attempt}/{max_retries}): {error}")
+                    if attempt < max_retries:
+                        wait_time = 2 ** attempt
+                        logger.info(f"    Waiting {wait_time}s before retry...")
+                        time.sleep(wait_time)
+                        try:
+                            db_loader._connect()
+                        except Exception:
+                            pass
+                        continue
+                    else:
+                        logger.error(f"    Failed after {max_retries} attempts: {comune.name}")
+                        return 0, 0, False
 
         return 0, 0, False
 
@@ -1162,12 +1357,19 @@ def run_ingestion(
                 comune = all_comuni[istat_code]
                 logger.info(f"  [{idx + 1}/{len(municipalities)}] {comune.name} ({comune.codcom} -> {istat_code})")
 
+                start_time = time.time()
                 loaded, rejected, success = process_municipality(comune, istat_code, idx, len(municipalities))
+                elapsed = time.time() - start_time
                 total_loaded += loaded
                 total_rejected += rejected
 
                 if not success:
-                    failed_municipalities.append((comune, istat_code))
+                    # Timed out municipalities get separate tracking (may need different retry approach)
+                    if elapsed >= municipality_timeout * 0.9:
+                        logger.warning(f"    Municipality {comune.name} added to timeout list")
+                        timed_out_municipalities.append((comune, istat_code))
+                    else:
+                        failed_municipalities.append((comune, istat_code))
 
         else:
             # Standard province-based processing
@@ -1215,14 +1417,20 @@ def run_ingestion(
 
                     logger.info(f"  [{com_idx + 1}/{len(comuni)}] {comune.name} ({comune.codcom} -> {istat_code})")
 
+                    start_time = time.time()
                     loaded, rejected, success = process_municipality(comune, istat_code, com_idx, len(comuni))
+                    elapsed = time.time() - start_time
                     total_loaded += loaded
                     total_rejected += rejected
 
                     if not success:
-                        failed_municipalities.append((comune, istat_code))
+                        if elapsed >= municipality_timeout * 0.9:
+                            logger.warning(f"    Municipality {comune.name} added to timeout list")
+                            timed_out_municipalities.append((comune, istat_code))
+                        else:
+                            failed_municipalities.append((comune, istat_code))
 
-        # Retry failed municipalities at the end
+        # Retry failed municipalities at the end (but not timed-out ones)
         if failed_municipalities:
             logger.info(f"\n{'=' * 60}")
             logger.info(f"Retrying {len(failed_municipalities)} failed municipalities...")
@@ -1235,17 +1443,28 @@ def run_ingestion(
                 # Wait a bit before retrying
                 time.sleep(3)
 
+                start_time = time.time()
                 loaded, rejected, success = process_municipality(comune, istat_code, idx, len(failed_municipalities))
+                elapsed = time.time() - start_time
                 total_loaded += loaded
                 total_rejected += rejected
 
                 if not success:
-                    still_failed.append((comune.name, istat_code))
+                    if elapsed >= municipality_timeout * 0.9:
+                        timed_out_municipalities.append((comune, istat_code))
+                    else:
+                        still_failed.append((comune.name, istat_code))
 
             if still_failed:
                 logger.error(f"\n{len(still_failed)} municipalities still failed after retry:")
                 for name, istat in still_failed:
                     logger.error(f"  - {name} ({istat})")
+
+        # Log timed-out municipalities separately
+        if timed_out_municipalities:
+            logger.warning(f"\n{len(timed_out_municipalities)} municipalities timed out (exceeded {municipality_timeout}s):")
+            for comune, istat in timed_out_municipalities:
+                logger.warning(f"  - {comune.name} ({istat}) - may need manual retry with longer timeout")
 
         # Complete ingestion run
         db_loader.complete_ingestion_run(
@@ -1334,6 +1553,13 @@ def main():
         help='Maximum retries for failed municipalities (default: 3)'
     )
 
+    parser.add_argument(
+        '--municipality-timeout',
+        type=int,
+        default=MUNICIPALITY_TIMEOUT_SECONDS,
+        help=f'Maximum seconds per municipality before auto-skip (default: {MUNICIPALITY_TIMEOUT_SECONDS})'
+    )
+
     args = parser.parse_args()
 
     if args.verbose:
@@ -1349,6 +1575,7 @@ def main():
             skip_loaded=args.skip_loaded,
             municipalities=args.municipalities,
             max_retries=args.max_retries,
+            municipality_timeout=args.municipality_timeout,
         )
     except KeyboardInterrupt:
         logger.info("\nIngestion interrupted by user")
