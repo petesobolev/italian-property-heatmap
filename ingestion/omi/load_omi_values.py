@@ -702,15 +702,69 @@ class DatabaseLoader:
     def municipality_has_data(self, municipality_id: str, period_id: str) -> bool:
         """Check if a municipality already has property value data for a given period."""
         self._ensure_connection()
+        # Check mart table (aggregated data) since raw data is deleted after aggregation
         self.cursor.execute("""
             SELECT EXISTS(
-                SELECT 1 FROM raw.omi_property_values
+                SELECT 1 FROM mart.municipality_values_semester
                 WHERE municipality_id = %s AND period_id = %s
                 LIMIT 1
             )
         """, (municipality_id, period_id))
         result = self.cursor.fetchone()
         return result['exists'] if result else False
+
+    def get_province_completion_status(self, province_istat_prefix: str, period_id: str) -> tuple[int, int]:
+        """
+        Check how many municipalities in a province have data for a period.
+
+        Args:
+            province_istat_prefix: 3-digit province ISTAT prefix (e.g., '058' for Roma)
+            period_id: Period to check (e.g., '2018H1')
+
+        Returns:
+            Tuple of (municipalities_with_data, total_municipalities_in_province)
+        """
+        self._ensure_connection()
+
+        # Count total municipalities in province
+        self.cursor.execute("""
+            SELECT COUNT(*) as total FROM core.municipalities
+            WHERE municipality_id LIKE %s
+        """, (f"{province_istat_prefix}%",))
+        total_result = self.cursor.fetchone()
+        total = total_result['total'] if total_result else 0
+
+        # Count municipalities with data for this period
+        self.cursor.execute("""
+            SELECT COUNT(DISTINCT municipality_id) as with_data
+            FROM mart.municipality_values_semester
+            WHERE municipality_id LIKE %s AND period_id = %s
+        """, (f"{province_istat_prefix}%", period_id))
+        data_result = self.cursor.fetchone()
+        with_data = data_result['with_data'] if data_result else 0
+
+        return with_data, total
+
+    def is_province_complete(self, province_istat_prefix: str, period_ids: list[str], threshold: float = 0.95) -> bool:
+        """
+        Check if a province is essentially complete (>= threshold of municipalities have data).
+
+        Args:
+            province_istat_prefix: 3-digit province ISTAT prefix
+            period_ids: List of periods to check (all must meet threshold)
+            threshold: Completion threshold (default 95%)
+
+        Returns:
+            True if province is complete for all periods
+        """
+        for period_id in period_ids:
+            with_data, total = self.get_province_completion_status(province_istat_prefix, period_id)
+            if total == 0:
+                return False
+            completion_rate = with_data / total
+            if completion_rate < threshold:
+                return False
+        return True
 
     def _normalize_name(self, name: str) -> str:
         """Normalize municipality name for matching - handle special characters."""
@@ -1398,6 +1452,22 @@ def run_ingestion(
                 # In test mode, limit to first 5 comuni
                 if test_mode:
                     comuni = comuni[:5]
+
+                # Check if province is already complete (skip entire province if so)
+                if skip_loaded and not skip_values and comuni:
+                    # Get the ISTAT prefix from the first comune we can resolve
+                    province_istat_prefix = None
+                    for sample_comune in comuni[:5]:  # Check first few comuni
+                        sample_istat = db_loader.find_istat_code(sample_comune.codcom, sample_comune.name, sample_comune.province_code)
+                        if sample_istat and len(sample_istat) >= 3:
+                            province_istat_prefix = sample_istat[:3]
+                            break
+
+                    if province_istat_prefix:
+                        period_ids = [f"{sem[:4]}H{sem[4]}" for sem in semesters]
+                        if db_loader.is_province_complete(province_istat_prefix, period_ids):
+                            logger.info(f"  Province {province.name} is already complete (>=95%), skipping entirely")
+                            continue
 
                 for com_idx, comune in enumerate(comuni):
                     # Look up ISTAT code from cadastral code
