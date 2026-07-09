@@ -4,7 +4,7 @@ import "leaflet/dist/leaflet.css";
 import { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import { useSearchParams } from "next/navigation";
 import type { GeoJsonObject, FeatureCollection, Feature } from "geojson";
-import { GeoJSON, MapContainer, TileLayer, useMap, ZoomControl } from "react-leaflet";
+import { CircleMarker, GeoJSON, MapContainer, TileLayer, useMap, ZoomControl } from "react-leaflet";
 import L from "leaflet";
 import type { Layer, LeafletMouseEvent, LatLngBounds } from "leaflet";
 import {
@@ -20,9 +20,16 @@ import {
 } from "@/components/map";
 import { CommandPalette } from "@/components/map/CommandPalette";
 
-// Southern Italian regions eligible for 7% flat tax regime
-// Regions: Sicilia (19), Calabria (18), Sardegna (20), Puglia (16),
-// Campania (15), Basilicata (17), Molise (14), Abruzzo (13)
+// Southern Italian regions eligible for 7% flat tax regime for foreign pensioners
+// ("Regime fiscale agevolato per i pensionati esteri")
+//
+// Legislative sources:
+// - Law 145/2018 (Legge di Bilancio 2019), Art. 1, paragraphs 273-274: Introduced the regime
+// - Law 197/2022 (Legge di Bilancio 2023): Raised population threshold from 20,000 to 30,000
+//
+// Eligible regions are the 8 Southern Italian regions (Mezzogiorno).
+// Region codes are standard ISTAT codes.
+// Reference: https://www.agenziaentrate.gov.it
 const FLAT_TAX_ELIGIBLE_REGIONS = new Set([
   "13", // Abruzzo
   "14", // Molise
@@ -144,6 +151,17 @@ const COLOR_SCALES: Record<MetricType, { stops: number[][]; noData: string; fixe
     ],
     noData: "#2a2d35",
     // No fixedRange - use dynamic range based on viewport data
+  },
+  value_pct_change: {
+    stops: [
+      [215, 48, 39],    // Deep red (large decline)
+      [252, 141, 89],   // Orange-red (moderate decline)
+      [168, 168, 168],  // Neutral gray (stable)
+      [145, 207, 96],   // Light green (moderate growth)
+      [26, 152, 80],    // Deep green (large growth)
+    ],
+    noData: "#2a2d35",
+    fixedRange: { min: -15, max: 15 },
   },
 };
 
@@ -403,6 +421,7 @@ export function MapInner() {
 
   // Command palette state
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
+  const [userLocation, setUserLocation] = useState<[number, number] | null>(null);
   const mapRef = useRef<L.Map | null>(null);
 
   // Track active tooltip layer to prevent ghost tooltips
@@ -502,6 +521,16 @@ export function MapInner() {
     }
   }, []);
 
+  const handleFlyToCoords = useCallback((lat: number, lng: number, zoom: number) => {
+    if (mapRef.current) {
+      mapRef.current.flyTo([lat, lng], zoom, { duration: 0.8 });
+    }
+  }, []);
+
+  const handleUserLocation = useCallback((lat: number, lng: number) => {
+    setUserLocation([lat, lng]);
+  }, []);
+
   // Load data
   useEffect(() => {
     let cancelled = false;
@@ -559,7 +588,7 @@ export function MapInner() {
           return result;
         }),
         fetch(
-          `/api/map/layer?metric=${filters.metric}&horizonMonths=12&segment=${filters.propertySegment}&semesters=${filters.semestersToAverage}`
+          `/api/map/layer?metric=${filters.metric}&horizonMonths=12&segment=${filters.propertySegment}&semesters=${filters.semestersToAverage}${filters.metric === "value_pct_change" && filters.valueChangePeriod ? `&changePeriod=${filters.valueChangePeriod}` : ""}`
         ).then((res) => {
           valuesComplete = true;
           updateProgress();
@@ -604,7 +633,7 @@ export function MapInner() {
     return () => {
       cancelled = true;
     };
-  }, [filters.metric, filters.region, filters.province, filters.propertySegment, filters.semestersToAverage]);
+  }, [filters.metric, filters.region, filters.province, filters.propertySegment, filters.semestersToAverage, filters.valueChangePeriod]);
 
   // Get visible municipality IDs based on current map bounds
   const visibleMunicipalityIds = useMemo(() => {
@@ -705,7 +734,7 @@ export function MapInner() {
 
   // Check if municipality is eligible for 7% flat tax
   // Requirements: Southern Italy region + population under 30,000
-  // (threshold increased from 20,000 to 30,000 per 2025 budget law)
+  // Population threshold: 20,000 (Law 145/2018) -> 30,000 (Law 197/2022)
   const isFlatTaxEligible = useCallback((feature: Feature | undefined): boolean => {
     if (!feature?.properties) return false;
     const regionCode = feature.properties.region_code as string | undefined;
@@ -998,6 +1027,8 @@ export function MapInner() {
         return `${value.toFixed(1)}% foreign`;
       case "population_growth_rate":
         return `${value >= 0 ? "+" : ""}${value.toFixed(1)}% YoY`;
+      case "value_pct_change":
+        return `${value >= 0 ? "+" : ""}${value.toFixed(1)}% change`;
       default:
         return value.toLocaleString();
     }
@@ -1123,6 +1154,20 @@ export function MapInner() {
           shouldFocus={shouldFocus}
           onFocusComplete={setLastFocusedParam}
         />
+        {/* User location marker - rendered last and in markerPane for highest z-index */}
+        {userLocation && (
+          <CircleMarker
+            center={userLocation}
+            radius={10}
+            pane="markerPane"
+            pathOptions={{
+              color: '#facc15',
+              fillColor: '#fde047',
+              fillOpacity: 0.5,
+              weight: 3,
+            }}
+          />
+        )}
       </MapContainer>
 
       {/* Legend */}
@@ -1214,6 +1259,8 @@ export function MapInner() {
         isOpen={commandPaletteOpen}
         onClose={() => setCommandPaletteOpen(false)}
         onSelectLocation={handleZoomToBounds}
+        onFlyToCoords={handleFlyToCoords}
+        onUserLocation={handleUserLocation}
       />
 
       <style jsx global>{`
@@ -1466,6 +1513,22 @@ export function MapInner() {
 
         .zone-indicator__close:hover {
           color: #f0f2f5;
+        }
+
+        /* User location marker pulse animation */
+        .leaflet-interactive[stroke="#facc15"] {
+          animation: locationPulse 2s ease-in-out infinite;
+        }
+
+        @keyframes locationPulse {
+          0%, 100% {
+            stroke-opacity: 1;
+            fill-opacity: 0.5;
+          }
+          50% {
+            stroke-opacity: 0.7;
+            fill-opacity: 0.25;
+          }
         }
       `}</style>
     </div>
