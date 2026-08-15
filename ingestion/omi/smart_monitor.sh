@@ -15,7 +15,7 @@ CHECK_INTERVAL=300           # Check every 5 minutes
 MONITOR_LOG="smart_monitor.log"
 
 # Years to process in order
-YEARS=(2016 2017 2018 2019)
+YEARS=(2016 2017 2018 2019 2020 2021 2022 2023)
 
 log() {
     echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" | tee -a "$MONITOR_LOG"
