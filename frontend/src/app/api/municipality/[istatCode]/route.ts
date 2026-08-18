@@ -151,7 +151,7 @@ export async function GET(request: Request, { params }: RouteParams) {
     .limit(1)
     .single();
 
-  // 4. Fetch historical values (last 8 semesters = 4 years)
+  // 4. Fetch all historical values (no limit - show full history back to 2016)
   const { data: historicalValues } = await supabase
     .schema("mart")
     .from("municipality_values_semester")
@@ -168,8 +168,7 @@ export async function GET(request: Request, { params }: RouteParams) {
     )
     .eq("municipality_id", istatCode)
     .eq("property_segment", segment)
-    .order("period_id", { ascending: false })
-    .limit(8);
+    .order("period_id", { ascending: false });
 
   // 5. Fetch historical transactions (municipal level)
   const { data: historicalTransactions } = await supabase
