@@ -1222,19 +1222,37 @@ export function MapInner() {
         </div>
       )}
 
-      {/* Search button */}
-      <button
-        className="search-button"
-        onClick={() => setCommandPaletteOpen(true)}
-        aria-label="Search locations"
-      >
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-          <circle cx="11" cy="11" r="8" />
-          <path d="m21 21-4.35-4.35" />
-        </svg>
-        <span className="search-button__text">Search</span>
-        <kbd className="search-button__kbd">⌘K</kbd>
-      </button>
+      {/* Map toolbar */}
+      <div className="map-toolbar">
+        <button
+          className="toolbar-button"
+          onClick={() => setCommandPaletteOpen(true)}
+          aria-label="Search locations"
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <circle cx="11" cy="11" r="8" />
+            <path d="m21 21-4.35-4.35" />
+          </svg>
+          <span className="toolbar-button__text">Search</span>
+          <kbd className="toolbar-button__kbd">⌘K</kbd>
+        </button>
+        <div className="toolbar-divider" />
+        <button
+          className="toolbar-button toolbar-button--icon"
+          onClick={() => {
+            if (mapRef.current) {
+              mapRef.current.flyTo([41.8719, 12.5674], 6, { duration: 0.8 });
+              setFocusedMunicipalityId(null);
+            }
+          }}
+          aria-label="Zoom out to full map"
+          title="Zoom out to full map"
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7" />
+          </svg>
+        </button>
+      </div>
 
       {/* Zone indicator - hide for municipality-only metrics that don't have zone data */}
       {effectiveMunicipalityId && currentZoom >= 11 && ![
@@ -1433,7 +1451,7 @@ export function MapInner() {
           letter-spacing: 0.02em;
         }
 
-        .search-button {
+        .map-toolbar {
           position: absolute;
           top: 16px;
           left: 50%;
@@ -1441,8 +1459,7 @@ export function MapInner() {
           z-index: 1000;
           display: flex;
           align-items: center;
-          gap: 8px;
-          padding: 10px 16px;
+          gap: 0;
           background: linear-gradient(165deg,
             rgba(22, 25, 32, 0.95) 0%,
             rgba(13, 15, 18, 0.97) 100%
@@ -1450,25 +1467,45 @@ export function MapInner() {
           backdrop-filter: blur(12px);
           border: 1px solid rgba(255, 255, 255, 0.08);
           border-radius: 24px;
+          box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+        }
+
+        .toolbar-button {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          padding: 10px 16px;
+          background: transparent;
+          border: none;
           font-family: 'DM Sans', -apple-system, sans-serif;
           font-size: 0.85rem;
           color: #6b7a90;
           cursor: pointer;
           transition: all 0.15s ease;
-          box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
         }
 
-        .search-button:hover {
-          border-color: rgba(196, 120, 92, 0.3);
+        .toolbar-button:first-child {
+          border-radius: 24px 0 0 24px;
+        }
+
+        .toolbar-button:last-child {
+          border-radius: 0 24px 24px 0;
+        }
+
+        .toolbar-button:hover {
           color: #a8b3c7;
-          box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+          background: rgba(255, 255, 255, 0.04);
         }
 
-        .search-button__text {
+        .toolbar-button--icon {
+          padding: 10px 14px;
+        }
+
+        .toolbar-button__text {
           font-weight: 500;
         }
 
-        .search-button__kbd {
+        .toolbar-button__kbd {
           padding: 3px 6px;
           background: rgba(255, 255, 255, 0.06);
           border: 1px solid rgba(255, 255, 255, 0.1);
@@ -1476,6 +1513,12 @@ export function MapInner() {
           font-size: 0.7rem;
           font-family: -apple-system, BlinkMacSystemFont, sans-serif;
           color: #4a5568;
+        }
+
+        .toolbar-divider {
+          width: 1px;
+          height: 20px;
+          background: rgba(255, 255, 255, 0.1);
         }
 
         .zone-indicator {
