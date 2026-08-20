@@ -1077,7 +1077,7 @@ export function MapInner() {
         label =
           typeof v === "number"
             ? `${name}: ${formatTooltipValue(v, filters.metric)}`
-            : `${name}: no data`;
+            : `${name}: ${filters.metric === "value_pct_change" ? "Insufficient historical data" : "No data"}`;
       }
 
       layer.bindTooltip(label, {
@@ -1153,7 +1153,7 @@ export function MapInner() {
         <TileLayer attribution={DARK_ATTRIBUTION} url={DARK_TILES} />
         {geojson && (
           <GeoJSON
-            key={`${filters.metric}-${filters.propertySegment}-${filters.showFlatTaxEligible}-${filters.region || 'all'}-${filters.province || 'all'}-${filters.semestersToAverage}-${Object.keys(valuesByMunicipality).length}`}
+            key={`${filters.metric}-${filters.propertySegment}-${filters.showFlatTaxEligible}-${filters.region || 'all'}-${filters.province || 'all'}-${filters.semestersToAverage}-${filters.valueChangePeriod ?? 'default'}-${Object.keys(valuesByMunicipality).length}`}
             data={geojson}
             style={style}
             onEachFeature={onEachFeature}
