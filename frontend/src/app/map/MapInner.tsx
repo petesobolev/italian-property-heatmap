@@ -73,7 +73,7 @@ const COLOR_SCALES: Record<MetricType, { stops: number[][]; noData: string; fixe
       [179, 0, 0],      // Deep red (high yield)
     ],
     noData: "#2a2d35",
-    // No fixedRange - use dynamic range based on viewport data
+    fixedRange: { min: 2, max: 8 }, // Fixed range for consistent colors (typical Italian yields)
   },
   price_variance_pct: {
     stops: [
@@ -581,14 +581,36 @@ export function MapInner() {
         }
       };
 
+      // Fetch with retry logic for transient Supabase connection issues
+      const fetchWithRetry = async (url: string, retries = 3): Promise<Response> => {
+        for (let attempt = 1; attempt <= retries; attempt++) {
+          try {
+            const res = await fetch(url);
+            if (res.ok || attempt === retries) return res;
+            // Retry on 5xx errors (server/connection issues)
+            if (res.status >= 500) {
+              console.warn(`Fetch attempt ${attempt} failed with ${res.status}, retrying...`);
+              await new Promise(r => setTimeout(r, 500 * attempt)); // Exponential backoff
+              continue;
+            }
+            return res; // Don't retry 4xx errors
+          } catch (err) {
+            if (attempt === retries) throw err;
+            console.warn(`Fetch attempt ${attempt} failed with network error, retrying...`);
+            await new Promise(r => setTimeout(r, 500 * attempt));
+          }
+        }
+        throw new Error("Fetch failed after retries");
+      };
+
       const [geo, valuesRes] = await Promise.all([
         loadGeoJSON().then((result) => {
           geoComplete = true;
           updateProgress();
           return result;
         }),
-        fetch(
-          `/api/map/layer?metric=${filters.metric}&horizonMonths=12&segment=${filters.propertySegment}&semesters=${filters.semestersToAverage}${filters.metric === "value_pct_change" && filters.valueChangePeriod ? `&changePeriod=${filters.valueChangePeriod}` : ""}`
+        fetchWithRetry(
+          `/api/map/layer?metric=${filters.metric}&horizonMonths=12&segment=${filters.propertySegment}&semesters=${filters.semestersToAverage}${filters.metric === "value_pct_change" && filters.valueChangePeriod !== undefined ? `&changeYears=${filters.valueChangePeriod}` : ""}`
         ).then((res) => {
           valuesComplete = true;
           updateProgress();
@@ -596,7 +618,10 @@ export function MapInner() {
         }),
       ]);
 
-      if (!valuesRes.ok) throw new Error("Failed to load layer values");
+      if (!valuesRes.ok) {
+        const errorText = await valuesRes.text().catch(() => "Unknown error");
+        throw new Error(`Failed to load layer values (${valuesRes.status}): ${errorText.slice(0, 200)}`);
+      }
 
       setLoadingProgress({ percent: 85, stage: "Processing data..." });
 

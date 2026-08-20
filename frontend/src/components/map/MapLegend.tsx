@@ -36,7 +36,7 @@ const METRIC_CONFIG: Record<
     unit: "%",
     format: (v) => `${v.toFixed(1)}%`,
     colors: ["#fef0d9", "#fdcc8a", "#fc8d59", "#e34a33", "#b30000"],
-    // No fixedRange - use dynamic range based on viewport data
+    fixedRange: { min: 2, max: 8 }, // Fixed range for consistent colors
   },
   price_variance_pct: {
     label: "Price Spread",
@@ -86,6 +86,13 @@ const METRIC_CONFIG: Record<
     format: (v) => `${v >= 0 ? "+" : ""}${v.toFixed(1)}%`,
     colors: ["#b43232", "#dc7864", "#b4b4b4", "#64b464", "#328c32"],
     // No fixedRange - use dynamic range based on viewport data
+  },
+  value_pct_change: {
+    label: "Value Change",
+    unit: "%",
+    format: (v) => `${v >= 0 ? "+" : ""}${v.toFixed(1)}%`,
+    colors: ["#d73027", "#fc8d59", "#a8a8a8", "#91cf60", "#1a9850"],
+    fixedRange: { min: -15, max: 15 },
   },
 };
 

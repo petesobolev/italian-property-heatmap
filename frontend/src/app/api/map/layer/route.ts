@@ -668,6 +668,123 @@ export async function GET(request: Request) {
     });
   }
 
+  // Handle value percentage change metric (compares current to historical)
+  if (metric === "value_pct_change") {
+    // changeYears: 0 = max (since 2016), 1-10 = number of years to look back
+    const changeYears = Number(searchParams.get("changeYears") ?? "1");
+
+    // Get available periods
+    const { data: availablePeriods, error: periodError } = await supabase
+      .schema("mart")
+      .rpc("get_available_periods", { p_segment: segment });
+
+    if (periodError) {
+      return NextResponse.json(
+        { metric, segment, changeYears, asOf: new Date().toISOString(), error: periodError.message, features: [] },
+        { status: 500 }
+      );
+    }
+
+    const allPeriods = availablePeriods?.map((p: { period_id: string }) => p.period_id) ?? [];
+    const availablePeriodsCount = allPeriods.length;
+
+    if (allPeriods.length < 2) {
+      return NextResponse.json({
+        metric,
+        segment,
+        changeYears,
+        availablePeriodsCount,
+        asOf: new Date().toISOString(),
+        features: [],
+        note: "Insufficient historical data for value change calculation. Need at least 2 periods.",
+      });
+    }
+
+    // Determine how many semesters to look back (2 semesters per year)
+    // changeYears = 0 means "max" (go back to earliest available)
+    const semestersBack = changeYears === 0
+      ? allPeriods.length - 1
+      : changeYears * 2;
+
+    const currentPeriod = allPeriods[0]; // Most recent
+    // Use earliest available if requested period exceeds available data
+    const comparisonIndex = Math.min(semestersBack, allPeriods.length - 1);
+    const comparisonPeriod = allPeriods[comparisonIndex];
+
+    // Fetch values for both periods in parallel with batching
+    const fetchPeriodValues = async (periodId: string) => {
+      const rows: { municipality_id: string; value_mid_eur_sqm: number }[] = [];
+      const batchSize = 1000;
+      let offset = 0;
+      let hasMore = true;
+
+      while (hasMore) {
+        const { data: batch, error } = await supabase
+          .schema("mart")
+          .from("municipality_values_semester")
+          .select("municipality_id, value_mid_eur_sqm")
+          .eq("period_id", periodId)
+          .eq("property_segment", segment)
+          .not("value_mid_eur_sqm", "is", null)
+          .range(offset, offset + batchSize - 1);
+
+        if (error) throw error;
+
+        if (batch && batch.length > 0) {
+          rows.push(...batch);
+          offset += batchSize;
+          hasMore = batch.length === batchSize;
+        } else {
+          hasMore = false;
+        }
+      }
+      return rows;
+    };
+
+    let currentValues: { municipality_id: string; value_mid_eur_sqm: number }[];
+    let comparisonValues: { municipality_id: string; value_mid_eur_sqm: number }[];
+
+    try {
+      [currentValues, comparisonValues] = await Promise.all([
+        fetchPeriodValues(currentPeriod),
+        fetchPeriodValues(comparisonPeriod),
+      ]);
+    } catch (err) {
+      return NextResponse.json(
+        { metric, segment, changeYears, asOf: new Date().toISOString(), error: String(err), features: [] },
+        { status: 500 }
+      );
+    }
+
+    // Build maps for lookup
+    const currentMap = new Map(currentValues.map(r => [r.municipality_id, r.value_mid_eur_sqm]));
+    const comparisonMap = new Map(comparisonValues.map(r => [r.municipality_id, r.value_mid_eur_sqm]));
+
+    // Calculate percentage changes
+    const features: { municipalityId: string; value: number }[] = [];
+    for (const [municipalityId, currentValue] of currentMap) {
+      const pastValue = comparisonMap.get(municipalityId);
+      if (pastValue && pastValue > 0) {
+        const pctChange = ((currentValue - pastValue) / pastValue) * 100;
+        features.push({ municipalityId, value: pctChange });
+      }
+    }
+
+    return NextResponse.json({
+      metric,
+      segment,
+      changeYears,
+      availablePeriodsCount,
+      currentPeriod,
+      comparisonPeriod,
+      asOf: currentPeriod,
+      source: "mart.municipality_values_semester (calculated)",
+      features,
+    }, {
+      headers: { "Cache-Control": "public, max-age=300, stale-while-revalidate=3600" },
+    });
+  }
+
   // Forecast metrics from model.forecasts_municipality
   // Latest published snapshot approach (MVP): pick latest forecast_date for requested horizon+segment.
   const { data: latest, error: latestError } = await supabase

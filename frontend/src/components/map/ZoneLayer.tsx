@@ -60,9 +60,10 @@ const COLOR_SCALES: Record<string, number[][]> = {
   ],
 };
 
-// Fixed ranges for certain metrics
+// Fixed ranges for certain metrics (must match MapInner.tsx and MapLegend.tsx)
 const FIXED_RANGES: Record<string, { min: number; max: number }> = {
   price_variance_pct: { min: 0, max: 100 },
+  gross_yield_pct: { min: 2, max: 8 }, // Typical Italian yields range
 };
 
 const NO_DATA_COLOR = "rgba(42, 45, 53, 0.6)"; // Neutral gray for missing data
@@ -165,6 +166,7 @@ export function ZoneLayer({ municipalityId, visible, metric = "value_mid_eur_sqm
       "forecast_gross_yield_pct",
       "opportunity_score",
       "confidence_score",
+      "value_pct_change",
     ];
     if (municipalityOnlyMetrics.includes(metric)) {
       setZones(null);

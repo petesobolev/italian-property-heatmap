@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 
 export type MetricType =
   | "value_mid_eur_sqm"
@@ -12,7 +12,11 @@ export type MetricType =
   | "opportunity_score"
   | "confidence_score"
   | "foreign_ratio"
-  | "population_growth_rate";
+  | "population_growth_rate"
+  | "value_pct_change";
+
+// Years for value change comparison (1-10, or 0 for "max" since 2016)
+export type ValueChangePeriod = number;
 
 export interface FiltersState {
   metric: MetricType;
@@ -22,6 +26,7 @@ export interface FiltersState {
   propertySegment: "residential" | "commercial" | "industrial";
   showFlatTaxEligible: boolean;
   semestersToAverage: number;
+  valueChangePeriod?: ValueChangePeriod;
 }
 
 interface FiltersSidebarProps {
@@ -100,7 +105,16 @@ const METRICS: { value: MetricType; label: string; icon: string; description: st
     icon: "📈",
     description: "Annual change (%)",
   },
+  {
+    value: "value_pct_change",
+    label: "Value Change",
+    icon: "△",
+    description: "Price trend over time",
+  },
 ];
+
+// Max years of historical data available (2016-2025 = ~10 years)
+const MAX_COMPARISON_YEARS = 10;
 
 const SEGMENTS = [
   { value: "residential", label: "Residential", icon: "⌂" },
@@ -121,12 +135,44 @@ export function FiltersSidebar({
   const [isAnimating, setIsAnimating] = useState(false);
   const [isInfoExpanded, setIsInfoExpanded] = useState(false);
 
+  // Local state for slider (only commits on mouse/touch release)
+  const [localChangeYears, setLocalChangeYears] = useState(filters.valueChangePeriod ?? 1);
+
+  // Sync local state when filters change externally
+  useEffect(() => {
+    setLocalChangeYears(filters.valueChangePeriod ?? 1);
+  }, [filters.valueChangePeriod]);
+
   // Filter metrics based on whether hidden metrics should be shown
   const visibleMetrics = METRICS.filter((m) => !m.hidden || showHiddenMetrics);
 
   const handleMetricChange = useCallback(
     (metric: MetricType) => {
-      onFiltersChange({ ...filters, metric });
+      const newFilters = { ...filters, metric };
+      // Set default period when switching to value change metric (1 year)
+      if (metric === "value_pct_change" && !filters.valueChangePeriod) {
+        newFilters.valueChangePeriod = 1;
+      }
+      onFiltersChange(newFilters);
+    },
+    [filters, onFiltersChange]
+  );
+
+  // Update local slider value (UI only, no API call)
+  const handleSliderChange = useCallback((years: number) => {
+    setLocalChangeYears(years);
+  }, []);
+
+  // Commit the slider value (triggers API call)
+  const handleSliderCommit = useCallback(() => {
+    onFiltersChange({ ...filters, valueChangePeriod: localChangeYears });
+  }, [filters, localChangeYears, onFiltersChange]);
+
+  // For button clicks, apply immediately
+  const handleValueChangePeriodChange = useCallback(
+    (years: number) => {
+      setLocalChangeYears(years);
+      onFiltersChange({ ...filters, valueChangePeriod: years });
     },
     [filters, onFiltersChange]
   );
@@ -247,6 +293,52 @@ export function FiltersSidebar({
             ))}
           </div>
         </div>
+
+        {/* Value Change Period Selector - only show when value_pct_change metric is selected */}
+        {filters.metric === "value_pct_change" && (
+          <div className="filters-section">
+            <label className="filters-section__label">
+              <span className="filters-section__label-text">Comparison Period</span>
+              <span className="filters-section__label-value">
+                {localChangeYears === 0
+                  ? "Max (since 2016)"
+                  : `${localChangeYears} year${localChangeYears > 1 ? "s" : ""}`}
+              </span>
+            </label>
+            <div className="slider-wrapper">
+              <input
+                type="range"
+                min="1"
+                max={Math.min(MAX_COMPARISON_YEARS, Math.floor(availablePeriodsCount / 2))}
+                step="1"
+                value={localChangeYears === 0 ? MAX_COMPARISON_YEARS : localChangeYears}
+                onChange={(e) => handleSliderChange(Number(e.target.value))}
+                onMouseUp={handleSliderCommit}
+                onTouchEnd={handleSliderCommit}
+                className="slider-input"
+              />
+              <div className="slider-track">
+                <div
+                  className="slider-fill slider-fill--teal"
+                  style={{
+                    width: `${((localChangeYears === 0 ? MAX_COMPARISON_YEARS : localChangeYears) - 1) / (Math.min(MAX_COMPARISON_YEARS, Math.floor(availablePeriodsCount / 2)) - 1) * 100}%`
+                  }}
+                />
+              </div>
+              <div className="slider-labels">
+                <span>1 yr</span>
+                <span>{Math.min(MAX_COMPARISON_YEARS, Math.floor(availablePeriodsCount / 2))} yrs</span>
+              </div>
+            </div>
+            <button
+              onClick={() => handleValueChangePeriodChange(localChangeYears === 0 ? 1 : 0)}
+              className={`max-period-btn ${localChangeYears === 0 ? "max-period-btn--active" : ""}`}
+            >
+              <span className="max-period-btn__icon">⟷</span>
+              <span>Use maximum range (since 2016)</span>
+            </button>
+          </div>
+        )}
 
         {/* Property Segment */}
         <div className="filters-section">
@@ -477,6 +569,7 @@ export function FiltersSidebar({
                 propertySegment: "residential",
                 showFlatTaxEligible: false,
                 semestersToAverage: 1,
+                valueChangePeriod: 1,
               })
             }
             className="reset-btn"
@@ -863,6 +956,10 @@ export function FiltersSidebar({
           transition: width 0.1s ease;
         }
 
+        .slider-fill--teal {
+          background: linear-gradient(90deg, #528b99 0%, #7cc4d4 100%);
+        }
+
         .slider-labels {
           display: flex;
           justify-content: space-between;
@@ -910,6 +1007,40 @@ export function FiltersSidebar({
           font-size: 0.6rem;
           color: #5a6677;
           line-height: 1.4;
+        }
+
+        .max-period-btn {
+          width: 100%;
+          margin-top: 10px;
+          padding: 8px 12px;
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          background: rgba(255, 255, 255, 0.02);
+          border: 1px solid rgba(255, 255, 255, 0.06);
+          border-radius: 6px;
+          color: #8b9bb4;
+          font-size: 0.7rem;
+          cursor: pointer;
+          transition: all 0.2s ease;
+        }
+
+        .max-period-btn:hover {
+          background: rgba(255, 255, 255, 0.04);
+          border-color: rgba(255, 255, 255, 0.1);
+        }
+
+        .max-period-btn--active {
+          background: linear-gradient(135deg,
+            rgba(82, 139, 153, 0.2) 0%,
+            rgba(62, 107, 119, 0.15) 100%
+          );
+          border-color: rgba(82, 139, 153, 0.5);
+          color: #7cc4d4;
+        }
+
+        .max-period-btn__icon {
+          font-size: 1rem;
         }
 
         .filters-sidebar__footer {
