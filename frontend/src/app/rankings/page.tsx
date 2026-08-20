@@ -45,6 +45,7 @@ interface RankingsResponse {
     latestPeriod: string | null;
     earliestPeriod: string | null;
     periodsIncluded: string[];
+    semestersToAverage?: number;
     segment: string;
     filters: {
       region: string | null;
@@ -79,7 +80,8 @@ const SORT_OPTIONS: { value: SortField; label: string }[] = [
 ];
 
 function formatCurrency(value: number | null): string {
-  if (value == null) return "—";
+  // Treat 0 as missing data for property values (no valid property costs €0)
+  if (value == null || value === 0) return "—";
   return `€${Math.round(value).toLocaleString("it-IT")}`;
 }
 
@@ -131,6 +133,9 @@ export default function RankingsPage() {
   const debounceRef = useRef<NodeJS.Timeout | null>(null);
   const highlightedRowRef = useRef<HTMLTableRowElement>(null);
 
+  // Data period selection (number of semesters to average)
+  const [semestersToAverage, setSemestersToAverage] = useState(4);
+
   const limit = 25;
 
   // Fetch regions and provinces on mount
@@ -163,6 +168,7 @@ export default function RankingsPage() {
         sortOrder,
         limit: String(limit),
         offset: String(page * limit),
+        semesters: String(semestersToAverage),
       });
 
       // Use override values if provided, otherwise use state
@@ -192,7 +198,7 @@ export default function RankingsPage() {
       setLoading(false);
       setIsSearching(false);
     }
-  }, [sortBy, sortOrder, page, selectedRegion, selectedProvince]);
+  }, [sortBy, sortOrder, page, selectedRegion, selectedProvince, semestersToAverage]);
 
   useEffect(() => {
     fetchRankings();
@@ -571,6 +577,29 @@ export default function RankingsPage() {
             </div>
           </div>
 
+          <div className="filters__group">
+            <label className="filters__label">Data Period</label>
+            <div className="filters__pills">
+              {[
+                { value: 1, label: "6 mo" },
+                { value: 2, label: "1 yr" },
+                { value: 4, label: "2 yr" },
+                { value: 8, label: "4 yr" },
+              ].map((option) => (
+                <button
+                  key={option.value}
+                  onClick={() => {
+                    setSemestersToAverage(option.value);
+                    setPage(0);
+                  }}
+                  className={`filters__pill ${semestersToAverage === option.value ? "filters__pill--active" : ""}`}
+                >
+                  {option.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
         </div>
 
         <div className="filters__row">
@@ -765,6 +794,16 @@ export default function RankingsPage() {
           </>
         )}
       </main>
+
+      {/* Loading overlay */}
+      {loading && (
+        <div className="loading-overlay">
+          <div className="loading-overlay__content">
+            <div className="loading-overlay__spinner" />
+            <span className="loading-overlay__text">Loading rankings...</span>
+          </div>
+        </div>
+      )}
 
       <style jsx>{`
         .rankings-page {
@@ -1645,6 +1684,58 @@ export default function RankingsPage() {
           .nav__links {
             display: none;
           }
+        }
+
+        /* Loading Overlay */
+        .loading-overlay {
+          position: fixed;
+          top: 64px;
+          left: 0;
+          right: 0;
+          bottom: 0;
+          z-index: 100;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          background: rgba(13, 15, 18, 0.8);
+          backdrop-filter: blur(4px);
+        }
+
+        .loading-overlay__content {
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          gap: 16px;
+          padding: 32px 48px;
+          background: linear-gradient(165deg,
+            rgba(22, 25, 32, 0.98) 0%,
+            rgba(13, 15, 18, 0.99) 100%
+          );
+          border: 1px solid rgba(255, 255, 255, 0.1);
+          border-radius: 16px;
+          box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+        }
+
+        .loading-overlay__spinner {
+          width: 40px;
+          height: 40px;
+          border: 3px solid rgba(196, 120, 92, 0.2);
+          border-top-color: #c4785c;
+          border-radius: 50%;
+          animation: spin 1s linear infinite;
+        }
+
+        @keyframes spin {
+          to {
+            transform: rotate(360deg);
+          }
+        }
+
+        .loading-overlay__text {
+          font-size: 0.85rem;
+          font-weight: 500;
+          color: #6b7a90;
+          letter-spacing: 0.02em;
         }
       `}</style>
     </div>

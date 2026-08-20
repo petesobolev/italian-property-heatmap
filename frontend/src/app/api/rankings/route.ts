@@ -27,6 +27,24 @@ interface CacheRow {
   periods_count: number;
 }
 
+interface MunicipalityInfo {
+  municipality_id: string;
+  municipality_name: string;
+  region_code: string;
+  region_name: string;
+  province_code: string;
+  province_name: string;
+  coastal_flag: boolean;
+  mountain_flag: boolean;
+}
+
+interface SemesterValue {
+  municipality_id: string;
+  value_mid_eur_sqm: number;
+  rent_mid_eur_sqm_month: number | null;
+  period_id: string;
+}
+
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
 
@@ -38,8 +56,26 @@ export async function GET(request: Request) {
   const regionCode = searchParams.get("region") || null;
   const provinceCode = searchParams.get("province") || null;
   const searchQuery = searchParams.get("search")?.toLowerCase().trim();
+  // Semesters to average: 1, 2, 4 (default/cache), or 8
+  const semestersToAverage = Math.min(Math.max(Number(searchParams.get("semesters") ?? "4"), 1), 8);
 
   const supabase = createSupabaseServerClient();
+
+  // For 4 semesters (default), use the pre-computed cache for performance
+  // For other values, compute dynamically
+  if (semestersToAverage !== 4) {
+    return getDynamicRankings(
+      supabase,
+      semestersToAverage,
+      sortBy,
+      sortOrder,
+      limit,
+      offset,
+      regionCode,
+      provinceCode,
+      searchQuery
+    );
+  }
 
   // Build base query on the materialized view
   let query = supabase
@@ -236,6 +272,287 @@ export async function GET(request: Request) {
       earliestPeriod,
       periodsIncluded,
       segment: "residential",
+      filters: {
+        region: regionCode,
+        province: provinceCode,
+      },
+    },
+    searchResult,
+  });
+}
+
+// Dynamic rankings computation for non-default semester counts
+async function getDynamicRankings(
+  supabase: ReturnType<typeof createSupabaseServerClient>,
+  semestersToAverage: number,
+  sortBy: SortField,
+  sortOrder: boolean,
+  limit: number,
+  offset: number,
+  regionCode: string | null,
+  provinceCode: string | null,
+  searchQuery: string | undefined
+) {
+  const segment = "residential";
+
+  // Get available periods
+  const { data: availablePeriods, error: periodError } = await supabase
+    .schema("mart")
+    .rpc("get_available_periods", { p_segment: segment });
+
+  if (periodError) {
+    return NextResponse.json(
+      { error: periodError.message, rankings: [], pagination: { total: 0, limit, offset, hasMore: false } },
+      { status: 500 }
+    );
+  }
+
+  const allPeriods = availablePeriods?.map((p: { period_id: string }) => p.period_id) ?? [];
+  if (allPeriods.length === 0) {
+    return NextResponse.json({
+      rankings: [],
+      pagination: { total: 0, limit, offset, hasMore: false },
+      meta: {
+        sortBy,
+        sortOrder: sortOrder ? "asc" : "desc",
+        latestPeriod: null,
+        earliestPeriod: null,
+        periodsIncluded: [],
+        semestersToAverage,
+        segment,
+        filters: { region: regionCode, province: provinceCode },
+      },
+      searchResult: null,
+    });
+  }
+
+  const periodsToUse = allPeriods.slice(0, semestersToAverage);
+  const latestPeriod = periodsToUse[0];
+  const earliestPeriod = periodsToUse[periodsToUse.length - 1];
+
+  // Fetch municipality info (for names, region, province, etc.)
+  const municipalityInfo = new Map<string, MunicipalityInfo>();
+  {
+    const batchSize = 1000;
+    let batchOffset = 0;
+    let hasMore = true;
+
+    while (hasMore) {
+      let infoQuery = supabase
+        .schema("mart")
+        .from("municipality_rankings_cache")
+        .select("municipality_id, municipality_name, region_code, region_name, province_code, province_name, coastal_flag, mountain_flag")
+        .range(batchOffset, batchOffset + batchSize - 1);
+
+      if (regionCode) infoQuery = infoQuery.eq("region_code", regionCode);
+      if (provinceCode) infoQuery = infoQuery.eq("province_code", provinceCode);
+
+      const { data: batch } = await infoQuery;
+
+      if (batch && batch.length > 0) {
+        for (const row of batch) {
+          municipalityInfo.set(row.municipality_id, row as MunicipalityInfo);
+        }
+        batchOffset += batchSize;
+        hasMore = batch.length === batchSize;
+      } else {
+        hasMore = false;
+      }
+    }
+  }
+
+  // Fetch semester values for selected periods
+  const allValues: SemesterValue[] = [];
+  {
+    const batchSize = 1000;
+    let batchOffset = 0;
+    let hasMore = true;
+
+    while (hasMore) {
+      const { data: batch, error: batchError } = await supabase
+        .schema("mart")
+        .from("municipality_values_semester")
+        .select("municipality_id, value_mid_eur_sqm, rent_mid_eur_sqm_month, period_id")
+        .in("period_id", periodsToUse)
+        .eq("property_segment", segment)
+        .not("value_mid_eur_sqm", "is", null)
+        .range(batchOffset, batchOffset + batchSize - 1);
+
+      if (batchError) {
+        return NextResponse.json(
+          { error: batchError.message, rankings: [], pagination: { total: 0, limit, offset, hasMore: false } },
+          { status: 500 }
+        );
+      }
+
+      if (batch && batch.length > 0) {
+        allValues.push(...(batch as SemesterValue[]));
+        batchOffset += batchSize;
+        hasMore = batch.length === batchSize;
+      } else {
+        hasMore = false;
+      }
+    }
+  }
+
+  // Aggregate values by municipality
+  const aggregated = new Map<string, {
+    valueSum: number;
+    rentSum: number;
+    rentCount: number;
+    valueCount: number;
+    latestValue: number | null;
+    earliestValue: number | null;
+  }>();
+
+  for (const row of allValues) {
+    const existing = aggregated.get(row.municipality_id);
+    if (existing) {
+      existing.valueSum += row.value_mid_eur_sqm;
+      existing.valueCount += 1;
+      if (row.rent_mid_eur_sqm_month) {
+        existing.rentSum += row.rent_mid_eur_sqm_month;
+        existing.rentCount += 1;
+      }
+      if (row.period_id === latestPeriod) existing.latestValue = row.value_mid_eur_sqm;
+      if (row.period_id === earliestPeriod) existing.earliestValue = row.value_mid_eur_sqm;
+    } else {
+      aggregated.set(row.municipality_id, {
+        valueSum: row.value_mid_eur_sqm,
+        rentSum: row.rent_mid_eur_sqm_month ?? 0,
+        rentCount: row.rent_mid_eur_sqm_month ? 1 : 0,
+        valueCount: 1,
+        latestValue: row.period_id === latestPeriod ? row.value_mid_eur_sqm : null,
+        earliestValue: row.period_id === earliestPeriod ? row.value_mid_eur_sqm : null,
+      });
+    }
+  }
+
+  // Build ranking entries
+  interface RankingData {
+    municipalityId: string;
+    name: string;
+    regionCode: string | null;
+    regionName: string | null;
+    provinceCode: string | null;
+    provinceName: string | null;
+    isCoastal: boolean;
+    isMountain: boolean;
+    valueMidEurSqm: number;
+    grossYieldPct: number | null;
+    annualizedPriceChangePct: number | null;
+    salesPer1000Pop: number | null;
+    zonesWithData: number;
+  }
+
+  const rankingEntries: RankingData[] = [];
+
+  for (const [municipalityId, data] of aggregated) {
+    const info = municipalityInfo.get(municipalityId);
+    if (!info) continue; // Skip if filtered out by region/province
+
+    const avgValue = data.valueSum / data.valueCount;
+    const avgRent = data.rentCount > 0 ? data.rentSum / data.rentCount : null;
+    const grossYield = avgRent && avgValue > 0 ? (avgRent * 12 / avgValue) * 100 : null;
+
+    // Calculate annualized price change
+    let annualizedChange: number | null = null;
+    if (data.latestValue && data.earliestValue && data.earliestValue > 0 && semestersToAverage > 1) {
+      const totalChange = (data.latestValue - data.earliestValue) / data.earliestValue;
+      const years = semestersToAverage / 2;
+      // Annualize: ((1 + total) ^ (1/years) - 1) * 100
+      annualizedChange = (Math.pow(1 + totalChange, 1 / years) - 1) * 100;
+    }
+
+    rankingEntries.push({
+      municipalityId,
+      name: info.municipality_name,
+      regionCode: info.region_code,
+      regionName: info.region_name,
+      provinceCode: info.province_code,
+      provinceName: info.province_name,
+      isCoastal: info.coastal_flag ?? false,
+      isMountain: info.mountain_flag ?? false,
+      valueMidEurSqm: avgValue,
+      grossYieldPct: grossYield,
+      annualizedPriceChangePct: annualizedChange,
+      salesPer1000Pop: null, // Not available in dynamic query
+      zonesWithData: data.valueCount,
+    });
+  }
+
+  // Sort entries
+  const sortKey = sortBy === "ntn_per_1000_pop" ? "salesPer1000Pop" :
+                  sortBy === "gross_yield_pct" ? "grossYieldPct" :
+                  sortBy === "annualized_price_change_pct" ? "annualizedPriceChangePct" :
+                  "valueMidEurSqm";
+
+  rankingEntries.sort((a, b) => {
+    const aVal = a[sortKey as keyof RankingData] as number | null;
+    const bVal = b[sortKey as keyof RankingData] as number | null;
+    if (aVal === null && bVal === null) return 0;
+    if (aVal === null) return 1;
+    if (bVal === null) return -1;
+    return sortOrder ? aVal - bVal : bVal - aVal;
+  });
+
+  const totalCount = rankingEntries.length;
+
+  // Handle search
+  let searchResult: {
+    municipalityId: string;
+    name: string;
+    rank: number;
+    page: number;
+    regionCode: string | null;
+    regionName: string | null;
+    provinceCode: string | null;
+    provinceName: string | null;
+  } | null = null;
+
+  if (searchQuery) {
+    const foundIndex = rankingEntries.findIndex(e =>
+      e.name.toLowerCase().includes(searchQuery)
+    );
+    if (foundIndex >= 0) {
+      const found = rankingEntries[foundIndex];
+      searchResult = {
+        municipalityId: found.municipalityId,
+        name: found.name,
+        rank: foundIndex + 1,
+        page: Math.floor(foundIndex / limit),
+        regionCode: found.regionCode,
+        regionName: found.regionName,
+        provinceCode: found.provinceCode,
+        provinceName: found.provinceName,
+      };
+    }
+  }
+
+  // Apply pagination
+  const paginatedEntries = rankingEntries.slice(offset, offset + limit);
+
+  const rankings = paginatedEntries.map((e, index) => ({
+    rank: offset + index + 1,
+    ...e,
+  }));
+
+  return NextResponse.json({
+    rankings,
+    pagination: {
+      total: totalCount,
+      limit,
+      offset,
+      hasMore: offset + rankings.length < totalCount,
+    },
+    meta: {
+      sortBy,
+      sortOrder: sortOrder ? "asc" : "desc",
+      latestPeriod,
+      earliestPeriod,
+      periodsIncluded: periodsToUse,
+      semestersToAverage,
+      segment,
       filters: {
         region: regionCode,
         province: provinceCode,

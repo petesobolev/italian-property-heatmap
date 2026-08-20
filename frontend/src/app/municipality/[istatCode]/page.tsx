@@ -125,7 +125,8 @@ interface MunicipalityDetail {
 }
 
 function formatCurrency(value: number | null | undefined): string {
-  if (value == null) return "—";
+  // Treat 0 as missing data for property values (no valid property costs €0)
+  if (value == null || value === 0) return "—";
   return `€${Math.round(value).toLocaleString("it-IT")}`;
 }
 
