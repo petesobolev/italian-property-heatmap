@@ -267,7 +267,7 @@ export function FiltersSidebar({
             </svg>
           </div>
           <div>
-            <h2 className="filters-sidebar__title">Analisi</h2>
+            <h2 className="filters-sidebar__title">Property Value Analysis</h2>
             <p className="filters-sidebar__subtitle">Configure your view</p>
           </div>
         </div>
@@ -687,11 +687,10 @@ export function FiltersSidebar({
         }
 
         .filters-sidebar__title {
-          font-family: 'Cormorant Garamond', Georgia, serif;
-          font-size: 1.25rem;
+          font-family: var(--font-body);
+          font-size: 1.1rem;
           font-weight: 600;
           color: #f0f2f5;
-          letter-spacing: 0.02em;
           margin: 0;
         }
 

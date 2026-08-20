@@ -1034,9 +1034,17 @@ function ComparePageContent() {
     <div className="compare-page">
       {/* Navigation */}
       <nav className="nav">
-        <Link href="/" className="nav__logo">
-          <span className="nav__logo-icon">◆</span>
-          <span className="nav__logo-text">Italia Immobiliare</span>
+        <Link
+          href="/"
+          className="nav__logo"
+          style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: '12px', textDecoration: 'none' }}
+        >
+          <img
+            src="/supersavvytravelers.png"
+            alt="Super Savvy Travelers"
+            style={{ height: '36px', width: 'auto', objectFit: 'contain', flexShrink: 0 }}
+          />
+          <span className="nav__logo-text">Super Savvy Travelers</span>
         </Link>
         <div className="nav__breadcrumb">
           <Link href="/map">Map</Link>
@@ -1242,18 +1250,21 @@ function ComparePageContent() {
 
         .nav__logo {
           display: flex;
+          flex-direction: row;
           align-items: center;
-          gap: 10px;
+          gap: 12px;
           text-decoration: none;
+          white-space: nowrap;
         }
 
-        .nav__logo-icon {
-          font-size: 1.25rem;
-          color: #c4785c;
+        .nav__logo-img {
+          height: 36px;
+          width: auto;
+          object-fit: contain;
+          flex-shrink: 0;
         }
 
         .nav__logo-text {
-          font-family: 'Cormorant Garamond', Georgia, serif;
           font-size: 1.1rem;
           font-weight: 600;
           color: #f0f2f5;

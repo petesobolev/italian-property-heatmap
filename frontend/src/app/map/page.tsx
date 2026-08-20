@@ -46,9 +46,17 @@ export default function MapPage() {
     <div className="map-page">
       {/* Top Navigation Bar */}
       <nav className="map-nav">
-        <Link href="/" className="map-nav__logo">
-          <span className="map-nav__logo-icon">◆</span>
-          <span className="map-nav__logo-text">Italia Immobiliare</span>
+        <Link
+          href="/"
+          className="map-nav__logo"
+          style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: '12px', textDecoration: 'none' }}
+        >
+          <img
+            src="/supersavvytravelers.png"
+            alt="Super Savvy Travelers"
+            style={{ height: '36px', width: 'auto', objectFit: 'contain', flexShrink: 0 }}
+          />
+          <span className="map-nav__logo-text">Super Savvy Travelers</span>
         </Link>
         <div className="map-nav__links">
           <Link href="/map" className="map-nav__link map-nav__link--active">
@@ -93,22 +101,24 @@ export default function MapPage() {
 
         .map-nav__logo {
           display: flex;
+          flex-direction: row;
           align-items: center;
-          gap: 10px;
+          gap: 12px;
           text-decoration: none;
+          white-space: nowrap;
         }
 
-        .map-nav__logo-icon {
-          font-size: 1.25rem;
-          color: #c4785c;
+        .map-nav__logo-img {
+          height: 36px;
+          width: auto;
+          object-fit: contain;
+          flex-shrink: 0;
         }
 
         .map-nav__logo-text {
-          font-family: 'Cormorant Garamond', Georgia, serif;
           font-size: 1.1rem;
           font-weight: 600;
           color: #f0f2f5;
-          letter-spacing: 0.02em;
         }
 
         .map-nav__links {

@@ -42,8 +42,13 @@ interface MunicipalityDetail {
     periodId: string;
     ntnTotal: number | null;
     ntnPer1000Pop: number | null;
-    absorptionRate: number | null;
   }>;
+  provincialTransactions: Array<{
+    periodId: string;
+    ntnCapoluogo: number;
+    ntnNonCapoluogo: number;
+    ntnTotal: number;
+  }> | null;
   demographics: {
     year: number;
     totalPopulation: number | null;
@@ -132,10 +137,18 @@ function formatPercent(value: number | null | undefined, showSign = true): strin
 
 function formatNumber(value: number | null | undefined, decimals = 0): string {
   if (value == null) return "—";
-  return value.toLocaleString("it-IT", {
+  return value.toLocaleString("en-US", {
     minimumFractionDigits: decimals,
     maximumFractionDigits: decimals,
   });
+}
+
+// Format period ID (e.g., "20242" -> "2024 H2")
+function formatPeriod(periodId: string | undefined): string {
+  if (!periodId || periodId.length !== 5) return "";
+  const year = periodId.slice(0, 4);
+  const semester = periodId.slice(4) === "1" ? "H1" : "H2";
+  return `${year} ${semester}`;
 }
 
 // Score Ring Component with enhanced styling
@@ -249,52 +262,126 @@ function ScoreRing({
   );
 }
 
-// Mini Chart for historical data
+// Mini Chart for historical data with axis labels
 function MiniChart({
   data,
+  labels,
   color = "#c4785c",
   height = 80,
+  showAxes = false,
+  formatValue,
 }: {
   data: number[];
+  labels?: string[];
   color?: string;
   height?: number;
+  showAxes?: boolean;
+  formatValue?: (v: number) => string;
 }) {
   if (data.length === 0) return null;
 
   const max = Math.max(...data);
   const min = Math.min(...data);
   const range = max - min || 1;
-  const width = 100;
-  const padding = 10;
+
+  // Adjust dimensions for axes
+  const width = showAxes ? 280 : 100;
+  const leftPadding = showAxes ? 50 : 10;
+  const rightPadding = 10;
+  const topPadding = 12;
+  const bottomPadding = showAxes ? 22 : 10;
+  const chartWidth = width - leftPadding - rightPadding;
+  const chartHeight = height - topPadding - bottomPadding;
 
   const points = data.map((value, i) => {
-    const x = padding + (i / (data.length - 1)) * (width - 2 * padding);
-    const y = height - padding - ((value - min) / range) * (height - 2 * padding);
+    const x = leftPadding + (i / (data.length - 1)) * chartWidth;
+    const y = topPadding + chartHeight - ((value - min) / range) * chartHeight;
     return `${x},${y}`;
   });
 
   const pathD = `M ${points.join(" L ")}`;
-  const areaD = `${pathD} L ${width - padding},${height - padding} L ${padding},${height - padding} Z`;
+  const areaD = `${pathD} L ${leftPadding + chartWidth},${topPadding + chartHeight} L ${leftPadding},${topPadding + chartHeight} Z`;
+
+  // Format with comma separator and euro symbol (4 significant figures)
+  const defaultFormat = (v: number) => `€${v.toLocaleString('en-US', { maximumFractionDigits: 0 })}`;
+  const fmt = formatValue || defaultFormat;
+
+  // Generate unique gradient ID to avoid conflicts
+  const gradientId = `chartGradient-${Math.random().toString(36).substr(2, 9)}`;
 
   return (
-    <svg viewBox={`0 0 ${width} ${height}`} className="mini-chart">
+    <svg viewBox={`0 0 ${width} ${height}`} className="mini-chart" preserveAspectRatio="xMidYMid meet">
       <defs>
-        <linearGradient id="chartGradient" x1="0%" y1="0%" x2="0%" y2="100%">
+        <linearGradient id={gradientId} x1="0%" y1="0%" x2="0%" y2="100%">
           <stop offset="0%" stopColor={color} stopOpacity="0.3" />
           <stop offset="100%" stopColor={color} stopOpacity="0" />
         </linearGradient>
       </defs>
-      <path d={areaD} fill="url(#chartGradient)" />
+
+      {/* Y-axis labels */}
+      {showAxes && (
+        <>
+          <text x={leftPadding - 4} y={topPadding + 4} textAnchor="end" className="axis-label">
+            {fmt(max)}
+          </text>
+          <text x={leftPadding - 4} y={topPadding + chartHeight} textAnchor="end" className="axis-label">
+            {fmt(min)}
+          </text>
+          {/* Horizontal grid lines */}
+          <line
+            x1={leftPadding} y1={topPadding}
+            x2={leftPadding + chartWidth} y2={topPadding}
+            stroke="rgba(255,255,255,0.1)" strokeDasharray="2,2"
+          />
+          <line
+            x1={leftPadding} y1={topPadding + chartHeight}
+            x2={leftPadding + chartWidth} y2={topPadding + chartHeight}
+            stroke="rgba(255,255,255,0.1)" strokeDasharray="2,2"
+          />
+        </>
+      )}
+
+      <path d={areaD} fill={`url(#${gradientId})`} />
       <path d={pathD} fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" />
+
       {data.map((value, i) => {
-        const x = padding + (i / (data.length - 1)) * (width - 2 * padding);
-        const y = height - padding - ((value - min) / range) * (height - 2 * padding);
+        const x = leftPadding + (i / (data.length - 1)) * chartWidth;
+        const y = topPadding + chartHeight - ((value - min) / range) * chartHeight;
         return <circle key={i} cx={x} cy={y} r="3" fill={color} />;
       })}
+
+      {/* X-axis labels */}
+      {showAxes && labels && labels.length > 0 && (
+        <>
+          {labels.map((label, i) => {
+            const x = leftPadding + (i / (labels.length - 1)) * chartWidth;
+            // Only show first, middle, and last labels to avoid crowding
+            const showLabel = i === 0 || i === labels.length - 1 || (labels.length > 4 && i === Math.floor(labels.length / 2));
+            if (!showLabel) return null;
+            return (
+              <text
+                key={i}
+                x={x}
+                y={height - 4}
+                textAnchor="middle"
+                className="axis-label"
+              >
+                {label}
+              </text>
+            );
+          })}
+        </>
+      )}
+
       <style jsx>{`
         .mini-chart {
           width: 100%;
           height: ${height}px;
+        }
+        .axis-label {
+          font-size: 10px;
+          fill: rgba(255, 255, 255, 0.6);
+          font-family: inherit;
         }
       `}</style>
     </svg>
@@ -582,7 +669,7 @@ export default function MunicipalityDetailPage({
     );
   }
 
-  const { municipality: m, forecast: f, historicalValues, historicalTransactions, demographics: d, neighbors } = data;
+  const { municipality: m, forecast: f, historicalValues, historicalTransactions, provincialTransactions, demographics: d, neighbors } = data;
 
   // Get current value - prefer forecast, fall back to latest historical
   const latestHistorical = historicalValues[0];
@@ -591,23 +678,30 @@ export default function MunicipalityDetailPage({
   const valueMax = latestHistorical?.valueMaxEurSqm ?? null;
 
   // Prepare chart data (reverse to show oldest first)
-  const priceHistory = [...historicalValues]
-    .reverse()
+  // Prepare chart data (reverse to show oldest first)
+  const reversedHistoricalValues = [...historicalValues].reverse();
+  const priceHistory = reversedHistoricalValues
     .map((v) => v.valueMidEurSqm)
     .filter((v): v is number => v != null);
-
-  const transactionHistory = [...historicalTransactions]
-    .reverse()
-    .map((t) => t.ntnTotal)
-    .filter((t): t is number => t != null);
+  const priceHistoryLabels = reversedHistoricalValues
+    .filter((v) => v.valueMidEurSqm != null)
+    .map((v) => v.periodId);
 
   return (
     <div className="municipality-page">
       {/* Navigation */}
       <nav className="nav">
-        <Link href="/" className="nav__logo">
-          <span className="nav__logo-icon">◆</span>
-          <span className="nav__logo-text">Italia Immobiliare</span>
+        <Link
+          href="/"
+          className="nav__logo"
+          style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: '12px', textDecoration: 'none' }}
+        >
+          <img
+            src="/supersavvytravelers.png"
+            alt="Super Savvy Travelers"
+            style={{ height: '36px', width: 'auto', objectFit: 'contain', flexShrink: 0 }}
+          />
+          <span className="nav__logo-text">Super Savvy Travelers</span>
         </Link>
         <div className="nav__breadcrumb">
           <Link href="/map">Map</Link>
@@ -692,67 +786,98 @@ export default function MunicipalityDetailPage({
                 </span>
               )}
             </div>
-            <div className="chart-card">
+            <div className="chart-card chart-card--with-axes">
               <span className="chart-card__title">Price History</span>
               {priceHistory.length > 1 ? (
-                <MiniChart data={priceHistory} color="#c4785c" height={100} />
+                <MiniChart
+                  data={priceHistory}
+                  labels={priceHistoryLabels}
+                  color="#c4785c"
+                  height={140}
+                  showAxes={true}
+                />
               ) : (
                 <div className="chart-card__empty">Insufficient data</div>
               )}
-              <div className="chart-card__labels">
-                {historicalValues.slice(-1)[0]?.periodId && (
-                  <>
-                    <span>{historicalValues[historicalValues.length - 1]?.periodId}</span>
-                    <span>{historicalValues[0]?.periodId}</span>
-                  </>
-                )}
-              </div>
             </div>
           </div>
         </section>
 
         {/* Market Activity Section */}
-        <section className="section section--market">
-          <div className="section__header">
-            <h2 className="section__title">Market Activity</h2>
-            <span className="section__subtitle">Transaction volume & intensity</span>
-          </div>
-          <div className="market-grid">
-            <div className="stat-card">
-              <span className="stat-card__icon">⇄</span>
-              <div className="stat-card__content">
-                <span className="stat-card__value">{formatNumber(historicalTransactions[0]?.ntnTotal, 1)}</span>
-                <span className="stat-card__label">NTN Transactions</span>
+        {(() => {
+          // Determine transaction data source - prefer municipal, fallback to provincial
+          const hasMunicipalData = historicalTransactions.length > 0 && historicalTransactions[0]?.ntnTotal != null;
+          const hasProvincialData = provincialTransactions && provincialTransactions.length > 0;
+          const isProvincial = !hasMunicipalData && hasProvincialData;
+
+          // Get transaction values
+          const ntnTotal = hasMunicipalData
+            ? historicalTransactions[0].ntnTotal
+            : hasProvincialData
+              ? provincialTransactions[0].ntnCapoluogo // Show capoluogo data for major cities
+              : null;
+
+          // Get or calculate per-capita rate
+          const ntnPer1000Pop = hasMunicipalData
+            ? historicalTransactions[0].ntnPer1000Pop
+            : (ntnTotal && d?.totalPopulation)
+              ? (ntnTotal / (d.totalPopulation / 1000))
+              : null;
+
+          // Get period ID
+          const transactionPeriod = hasMunicipalData
+            ? historicalTransactions[0]?.periodId
+            : hasProvincialData
+              ? provincialTransactions[0].periodId
+              : undefined;
+
+          // Build transaction history for chart (only used with municipal data)
+          const txHistory = hasMunicipalData
+            ? [...historicalTransactions].reverse().map((t) => t.ntnTotal).filter((t): t is number => t != null)
+            : [];
+
+          return (
+            <section className="section section--market">
+              <div className="section__header">
+                <h2 className="section__title">
+                  Market Activity
+                  {transactionPeriod && (
+                    <span className="section__period-badge">
+                      {formatPeriod(transactionPeriod)}{isProvincial ? " · Provincial" : ""}
+                    </span>
+                  )}
+                </h2>
+                <span className="section__subtitle">Transaction volume & intensity</span>
               </div>
-            </div>
-            <div className="stat-card">
-              <span className="stat-card__icon">⚡</span>
-              <div className="stat-card__content">
-                <span className="stat-card__value">{formatNumber(historicalTransactions[0]?.ntnPer1000Pop, 2)}</span>
-                <span className="stat-card__label">NTN per 1000 pop</span>
+              <div className="market-grid">
+                <div className="stat-card">
+                  <span className="stat-card__icon">⇄</span>
+                  <div className="stat-card__content">
+                    <span className="stat-card__value">{formatNumber(ntnTotal, 1)}</span>
+                    <span className="stat-card__label">Property Sales</span>
+                  </div>
+                </div>
+                <div className="stat-card">
+                  <span className="stat-card__icon">⚡</span>
+                  <div className="stat-card__content">
+                    <span className="stat-card__value">{formatNumber(ntnPer1000Pop, 2)}</span>
+                    <span className="stat-card__label">Sales per 1,000 Residents</span>
+                  </div>
+                </div>
+{hasMunicipalData && (
+                  <div className="chart-card chart-card--small">
+                    <span className="chart-card__title">Transaction Volume</span>
+                    {txHistory.length > 1 ? (
+                      <MiniChart data={txHistory} color="#528b99" height={80} />
+                    ) : (
+                      <div className="chart-card__empty">Insufficient data</div>
+                    )}
+                  </div>
+                )}
               </div>
-            </div>
-            <div className="stat-card">
-              <span className="stat-card__icon">⏱</span>
-              <div className="stat-card__content">
-                <span className="stat-card__value">
-                  {historicalTransactions[0]?.absorptionRate != null
-                    ? `${(historicalTransactions[0].absorptionRate * 100).toFixed(0)}%`
-                    : "—"}
-                </span>
-                <span className="stat-card__label">Absorption Rate</span>
-              </div>
-            </div>
-            <div className="chart-card chart-card--small">
-              <span className="chart-card__title">Transaction Volume</span>
-              {transactionHistory.length > 1 ? (
-                <MiniChart data={transactionHistory} color="#528b99" height={80} />
-              ) : (
-                <div className="chart-card__empty">Insufficient data</div>
-              )}
-            </div>
-          </div>
-        </section>
+            </section>
+          );
+        })()}
 
         {/* Demographics Section */}
         {d && (
@@ -807,6 +932,13 @@ export default function MunicipalityDetailPage({
                   <span><i className="dot dot--working" /> Working {d.workingRatio ? `${(d.workingRatio * 100).toFixed(1)}%` : ""}</span>
                   <span><i className="dot dot--elderly" /> Elderly {d.elderlyRatio ? `${(d.elderlyRatio * 100).toFixed(1)}%` : ""}</span>
                 </div>
+                {d.dependencyRatio != null && (
+                  <div className="demo-dependency">
+                    <span className="demo-dependency__label">Dependency Ratio</span>
+                    <span className="demo-dependency__value">{d.dependencyRatio.toFixed(2)}:1</span>
+                    <span className="demo-dependency__hint">dependents per working-age person</span>
+                  </div>
+                )}
               </div>
 
               <div className="demo-stats">
@@ -815,12 +947,6 @@ export default function MunicipalityDetailPage({
                     {d.foreignRatio != null ? `${(d.foreignRatio * 100).toFixed(1)}%` : "—"}
                   </span>
                   <span className="demo-stat__label">Foreign Residents</span>
-                </div>
-                <div className="demo-stat">
-                  <span className="demo-stat__value">
-                    {d.dependencyRatio != null ? `${(d.dependencyRatio * 100).toFixed(0)}%` : "—"}
-                  </span>
-                  <span className="demo-stat__label">Dependency Ratio</span>
                 </div>
               </div>
             </div>
@@ -1187,18 +1313,21 @@ export default function MunicipalityDetailPage({
 
         .nav__logo {
           display: flex;
+          flex-direction: row;
           align-items: center;
-          gap: 10px;
+          gap: 12px;
           text-decoration: none;
+          white-space: nowrap;
         }
 
-        .nav__logo-icon {
-          font-size: 1.25rem;
-          color: #c4785c;
+        .nav__logo-img {
+          height: 36px;
+          width: auto;
+          object-fit: contain;
+          flex-shrink: 0;
         }
 
         .nav__logo-text {
-          font-family: 'Cormorant Garamond', Georgia, serif;
           font-size: 1.1rem;
           font-weight: 600;
           color: #f0f2f5;
@@ -1383,6 +1512,20 @@ export default function MunicipalityDetailPage({
           color: #6b7a90;
         }
 
+        .section__period-badge {
+          display: inline-block;
+          margin-left: 12px;
+          padding: 3px 8px;
+          font-family: 'DM Sans', -apple-system, sans-serif;
+          font-size: 0.7rem;
+          font-weight: 500;
+          color: #8b9bb4;
+          background: rgba(139, 155, 180, 0.15);
+          border: 1px solid rgba(139, 155, 180, 0.2);
+          border-radius: 4px;
+          vertical-align: middle;
+        }
+
         /* Values Grid */
         .values-grid {
           display: grid;
@@ -1449,6 +1592,14 @@ export default function MunicipalityDetailPage({
 
         .chart-card--small {
           grid-column: span 1;
+        }
+
+        .chart-card--with-axes {
+          padding-bottom: 16px;
+        }
+
+        .chart-card--with-axes .mini-chart {
+          margin-top: 8px;
         }
 
         .chart-card__title {
@@ -1628,6 +1779,35 @@ export default function MunicipalityDetailPage({
         .dot--young { background: #7cc4d4; }
         .dot--working { background: #528b99; }
         .dot--elderly { background: #3a5a66; }
+
+        .demo-dependency {
+          display: flex;
+          align-items: center;
+          gap: 12px;
+          margin-top: 16px;
+          padding-top: 16px;
+          border-top: 1px solid rgba(255, 255, 255, 0.06);
+        }
+
+        .demo-dependency__label {
+          font-size: 0.7rem;
+          color: #6b7a90;
+          text-transform: uppercase;
+          letter-spacing: 0.06em;
+        }
+
+        .demo-dependency__value {
+          font-family: 'Cormorant Garamond', Georgia, serif;
+          font-size: 1.25rem;
+          font-weight: 600;
+          color: #f0f2f5;
+        }
+
+        .demo-dependency__hint {
+          font-size: 0.7rem;
+          color: #5a6677;
+          font-style: italic;
+        }
 
         .demo-stats {
           display: flex;
