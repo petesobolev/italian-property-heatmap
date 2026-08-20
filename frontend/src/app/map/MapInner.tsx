@@ -565,6 +565,9 @@ export function MapInner() {
 
     async function load() {
       setLoading(true);
+      // Clear old values immediately to force GeoJSON re-render with fresh data
+      // This prevents stale colors when switching metrics with same municipality count
+      setValuesByMunicipality({});
       setLoadingProgress({ percent: 5, stage: "Loading map boundaries..." });
 
       // Track completion of parallel fetches
