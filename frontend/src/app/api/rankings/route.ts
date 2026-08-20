@@ -257,6 +257,7 @@ export async function GET(request: Request) {
     }
   }
 
+  // Cache for 2 minutes with stale-while-revalidate for fast perceived performance
   return NextResponse.json({
     rankings,
     pagination: {
@@ -278,6 +279,10 @@ export async function GET(request: Request) {
       },
     },
     searchResult,
+  }, {
+    headers: {
+      "Cache-Control": "public, max-age=120, stale-while-revalidate=600",
+    },
   });
 }
 
@@ -333,7 +338,7 @@ async function getDynamicRankings(
   // Fetch municipality info (for names, region, province, etc.)
   const municipalityInfo = new Map<string, MunicipalityInfo>();
   {
-    const batchSize = 1000;
+    const batchSize = 5000;
     let batchOffset = 0;
     let hasMore = true;
 
@@ -364,7 +369,7 @@ async function getDynamicRankings(
   // Fetch semester values for selected periods
   const allValues: SemesterValue[] = [];
   {
-    const batchSize = 1000;
+    const batchSize = 5000;
     let batchOffset = 0;
     let hasMore = true;
 
@@ -537,6 +542,7 @@ async function getDynamicRankings(
     ...e,
   }));
 
+  // Cache for 2 minutes with stale-while-revalidate
   return NextResponse.json({
     rankings,
     pagination: {
@@ -559,5 +565,9 @@ async function getDynamicRankings(
       },
     },
     searchResult,
+  }, {
+    headers: {
+      "Cache-Control": "public, max-age=120, stale-while-revalidate=600",
+    },
   });
 }

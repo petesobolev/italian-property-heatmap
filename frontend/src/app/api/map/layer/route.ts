@@ -15,7 +15,7 @@ export async function GET(request: Request) {
     // Fetch foreign_ratio from municipality_demographics_year
     // Use pagination to get all records
     const allRows: { municipality_id: string; foreign_ratio: number }[] = [];
-    const batchSize = 1000;
+    const batchSize = 5000;
     let offset = 0;
     let hasMore = true;
 
@@ -75,7 +75,7 @@ export async function GET(request: Request) {
     // Fetch population_growth_rate from municipality_demographics_year
     // Use pagination to get all records
     const allRows: { municipality_id: string; population_growth_rate: number }[] = [];
-    const batchSize = 1000;
+    const batchSize = 5000;
     let offset = 0;
     let hasMore = true;
 
@@ -212,8 +212,10 @@ export async function GET(request: Request) {
 
     // Get municipality values for all selected periods
     // Note: Supabase defaults to 1000 rows max, so we fetch in batches
+    // Fetch all rows - use larger batch size (Supabase supports up to 10k)
+    // For ~8k municipalities × N semesters, we typically need 1-3 batches
     const allMartRows: { municipality_id: string; value_mid_eur_sqm: number; period_id: string }[] = [];
-    const batchSize = 1000;
+    const batchSize = 5000;
     let offset = 0;
     let hasMore = true;
 
@@ -335,7 +337,7 @@ export async function GET(request: Request) {
 
     // Fetch rental data in batches
     const allRentRows: { municipality_id: string; rent_mid_eur_sqm_month: number; period_id: string }[] = [];
-    const batchSize = 1000;
+    const batchSize = 5000;
     let offset = 0;
     let hasMore = true;
 
@@ -419,7 +421,7 @@ export async function GET(request: Request) {
 
     // Fetch both value and rent data in batches
     const allRows: { municipality_id: string; value_mid_eur_sqm: number; rent_mid_eur_sqm_month: number; period_id: string }[] = [];
-    const batchSize = 1000;
+    const batchSize = 5000;
     let offset = 0;
     let hasMore = true;
 
@@ -513,7 +515,7 @@ export async function GET(request: Request) {
 
     // Fetch condition premium from pre-computed mart table in batches
     const allRows: { municipality_id: string; condition_premium_pct: number; period_id: string }[] = [];
-    const batchSize = 1000;
+    const batchSize = 5000;
     let offset = 0;
     let hasMore = true;
 
@@ -598,7 +600,7 @@ export async function GET(request: Request) {
 
     // Fetch min, max, mid values in batches
     const allRows: { municipality_id: string; value_min_eur_sqm: number; value_max_eur_sqm: number; value_mid_eur_sqm: number; period_id: string }[] = [];
-    const batchSize = 1000;
+    const batchSize = 5000;
     let offset = 0;
     let hasMore = true;
 
@@ -714,7 +716,7 @@ export async function GET(request: Request) {
     // Fetch values for both periods in parallel with batching
     const fetchPeriodValues = async (periodId: string) => {
       const rows: { municipality_id: string; value_mid_eur_sqm: number }[] = [];
-      const batchSize = 1000;
+      const batchSize = 5000;
       let offset = 0;
       let hasMore = true;
 
