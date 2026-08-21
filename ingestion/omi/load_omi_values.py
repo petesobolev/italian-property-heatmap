@@ -1103,6 +1103,75 @@ class DatabaseLoader:
                 self.conn.rollback()
                 logger.warning(f"Failed to aggregate {segment} for {municipality_id}/{period_id}: {e}")
 
+    def aggregate_zone_values(self, municipality_id: str, period_id: str):
+        """Aggregate raw values to zone level for mart table."""
+        self._ensure_connection()
+
+        try:
+            # Aggregate zone values for residential properties
+            self.cursor.execute("""
+                INSERT INTO mart.omi_zone_values_semester (
+                    omi_zone_id, period_id, property_segment,
+                    value_min_eur_sqm, value_max_eur_sqm, value_mid_eur_sqm,
+                    rent_min_eur_sqm_month, rent_max_eur_sqm_month, rent_mid_eur_sqm_month,
+                    zone_type, gross_yield_pct, data_quality_score, updated_at
+                )
+                SELECT
+                    r.omi_zone_id,
+                    r.period_id,
+                    'residential' AS property_segment,
+                    MIN(r.value_min_eur_sqm) AS value_min_eur_sqm,
+                    MAX(r.value_max_eur_sqm) AS value_max_eur_sqm,
+                    AVG((COALESCE(r.value_min_eur_sqm, 0) + COALESCE(r.value_max_eur_sqm, 0)) / 2)
+                        FILTER (WHERE r.value_min_eur_sqm IS NOT NULL OR r.value_max_eur_sqm IS NOT NULL) AS value_mid_eur_sqm,
+                    MIN(r.rent_min_eur_sqm_month) AS rent_min_eur_sqm_month,
+                    MAX(r.rent_max_eur_sqm_month) AS rent_max_eur_sqm_month,
+                    AVG((COALESCE(r.rent_min_eur_sqm_month, 0) + COALESCE(r.rent_max_eur_sqm_month, 0)) / 2)
+                        FILTER (WHERE r.rent_min_eur_sqm_month IS NOT NULL OR r.rent_max_eur_sqm_month IS NOT NULL) AS rent_mid_eur_sqm_month,
+                    z.zone_type,
+                    CASE
+                        WHEN AVG((COALESCE(r.value_min_eur_sqm, 0) + COALESCE(r.value_max_eur_sqm, 0)) / 2)
+                            FILTER (WHERE r.value_min_eur_sqm IS NOT NULL OR r.value_max_eur_sqm IS NOT NULL) > 0
+                        THEN ROUND(
+                            (AVG((COALESCE(r.rent_min_eur_sqm_month, 0) + COALESCE(r.rent_max_eur_sqm_month, 0)) / 2)
+                                FILTER (WHERE r.rent_min_eur_sqm_month IS NOT NULL OR r.rent_max_eur_sqm_month IS NOT NULL) * 12
+                            / AVG((COALESCE(r.value_min_eur_sqm, 0) + COALESCE(r.value_max_eur_sqm, 0)) / 2)
+                                FILTER (WHERE r.value_min_eur_sqm IS NOT NULL OR r.value_max_eur_sqm IS NOT NULL)) * 100
+                        , 2)
+                        ELSE NULL
+                    END AS gross_yield_pct,
+                    100.0 AS data_quality_score,
+                    NOW() AS updated_at
+                FROM raw.omi_property_values r
+                LEFT JOIN core.omi_zones z ON r.omi_zone_id = z.omi_zone_id
+                WHERE r.municipality_id = %s
+                  AND r.period_id = %s
+                  AND r.property_type = 'residenziale'
+                  AND r.state IN ('NORMALE', 'normale', NULL)
+                  AND r.omi_zone_id IS NOT NULL
+                GROUP BY r.omi_zone_id, r.period_id, z.zone_type
+                ON CONFLICT (omi_zone_id, period_id, property_segment)
+                DO UPDATE SET
+                    value_min_eur_sqm = EXCLUDED.value_min_eur_sqm,
+                    value_max_eur_sqm = EXCLUDED.value_max_eur_sqm,
+                    value_mid_eur_sqm = EXCLUDED.value_mid_eur_sqm,
+                    rent_min_eur_sqm_month = EXCLUDED.rent_min_eur_sqm_month,
+                    rent_max_eur_sqm_month = EXCLUDED.rent_max_eur_sqm_month,
+                    rent_mid_eur_sqm_month = EXCLUDED.rent_mid_eur_sqm_month,
+                    zone_type = EXCLUDED.zone_type,
+                    gross_yield_pct = EXCLUDED.gross_yield_pct,
+                    data_quality_score = EXCLUDED.data_quality_score,
+                    updated_at = EXCLUDED.updated_at
+            """, (municipality_id, period_id))
+
+            zones_aggregated = self.cursor.rowcount
+            self.conn.commit()
+            if zones_aggregated > 0:
+                logger.debug(f"Aggregated {zones_aggregated} zones for {municipality_id}/{period_id}")
+        except Exception as e:
+            self.conn.rollback()
+            logger.warning(f"Failed to aggregate zones for {municipality_id}/{period_id}: {e}")
+
     def delete_raw_municipality_data(self, municipality_id: str, period_id: str):
         """Delete raw data for a municipality after aggregation to save storage."""
         self._ensure_connection()
@@ -1169,6 +1238,7 @@ def run_ingestion(
     municipalities: list[str] = None,
     max_retries: int = 3,
     municipality_timeout: int = MUNICIPALITY_TIMEOUT_SECONDS,
+    force_zone_reload: bool = False,
 ):
     """
     Main ingestion function.
@@ -1271,6 +1341,7 @@ def run_ingestion(
                     progress_tracker.heartbeat(f"Aggregating {comune.name}/{semester}")
                     period_id = f"{semester[:4]}H{semester[4]}"
                     db_loader.aggregate_municipality_values(istat_code, period_id)
+                    db_loader.aggregate_zone_values(istat_code, period_id)
                     # Delete raw data after aggregation to save storage
                     db_loader.delete_raw_municipality_data(istat_code, period_id)
 
@@ -1454,7 +1525,8 @@ def run_ingestion(
                     comuni = comuni[:5]
 
                 # Check if province is already complete (skip entire province if so)
-                if skip_loaded and not skip_values and comuni:
+                # Skip unless force_zone_reload is set (which forces re-ingestion for zone data)
+                if skip_loaded and not skip_values and comuni and not force_zone_reload:
                     # Get the ISTAT prefix from the first comune we can resolve
                     province_istat_prefix = None
                     for sample_comune in comuni[:5]:  # Check first few comuni
@@ -1479,7 +1551,8 @@ def run_ingestion(
                     comune.istat_code = istat_code
 
                     # Check if municipality already has data for requested semesters
-                    if skip_loaded and not skip_values:
+                    # Skip unless force_zone_reload is set (which forces re-ingestion for zone data)
+                    if skip_loaded and not skip_values and not force_zone_reload:
                         period_id = f"{semesters[0][:4]}H{semesters[0][4]}"
                         if db_loader.municipality_has_data(istat_code, period_id):
                             logger.debug(f"  [{com_idx + 1}/{len(comuni)}] {comune.name} - skipping (already has data)")
@@ -1630,6 +1703,12 @@ def main():
         help=f'Maximum seconds per municipality before auto-skip (default: {MUNICIPALITY_TIMEOUT_SECONDS})'
     )
 
+    parser.add_argument(
+        '--force-zone-reload',
+        action='store_true',
+        help='Force re-ingestion to populate zone-level data (ignores existing municipality data)'
+    )
+
     args = parser.parse_args()
 
     if args.verbose:
@@ -1646,6 +1725,7 @@ def main():
             municipalities=args.municipalities,
             max_retries=args.max_retries,
             municipality_timeout=args.municipality_timeout,
+            force_zone_reload=args.force_zone_reload,
         )
     except KeyboardInterrupt:
         logger.info("\nIngestion interrupted by user")
