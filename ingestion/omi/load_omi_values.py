@@ -100,7 +100,7 @@ class MunicipalityTimeoutError(Exception):
     """Raised when a municipality takes too long to process."""
     pass
 
-# Property types to focus on (residential)
+# Property types by segment - all segments are now ingested
 RESIDENTIAL_PROPERTY_TYPES = {
     'Abitazioni civili',
     'Abitazioni di tipo economico',
@@ -112,18 +112,40 @@ RESIDENTIAL_PROPERTY_TYPES = {
     'Autorimesse',
 }
 
-# Property type normalization mapping
+COMMERCIAL_PROPERTY_TYPES = {
+    'Negozi',
+    'Uffici',
+    'Uffici strutturati',
+    'Centri commerciali',
+}
+
+INDUSTRIAL_PROPERTY_TYPES = {
+    'Magazzini',
+    'Laboratori',
+    'Capannoni industriali',
+    'Capannoni tipici',
+}
+
+# All property types we want to ingest
+ALL_PROPERTY_TYPES = RESIDENTIAL_PROPERTY_TYPES | COMMERCIAL_PROPERTY_TYPES | INDUSTRIAL_PROPERTY_TYPES
+
+# Property type normalization mapping (lowercase key -> normalized value)
 PROPERTY_TYPE_MAPPING = {
-    'abitazioni civili': 'residenziale_civile',
-    'abitazioni di tipo economico': 'residenziale_economico',
-    'abitazioni signorili': 'residenziale_signorile',
-    'ville e villini': 'ville_villini',
-    'box': 'box',
-    'posti auto coperti': 'posto_auto_coperto',
-    'posti auto scoperti': 'posto_auto_scoperto',
-    'autorimesse': 'autorimessa',
+    # Residential
+    'abitazioni civili': 'residenziale',
+    'abitazioni di tipo economico': 'residenziale',
+    'abitazioni signorili': 'residenziale',
+    'ville e villini': 'residenziale',
+    'box': 'residenziale',
+    'posti auto coperti': 'residenziale',
+    'posti auto scoperti': 'residenziale',
+    'autorimesse': 'residenziale',
+    # Commercial
     'negozi': 'negozi',
     'uffici': 'uffici',
+    'uffici strutturati': 'uffici',
+    'centri commerciali': 'negozi',
+    # Industrial
     'laboratori': 'laboratori',
     'magazzini': 'magazzini',
     'capannoni industriali': 'capannoni',
@@ -977,7 +999,11 @@ class DatabaseLoader:
 
         for value in values:
             period_id = f"{value.semester_id[:4]}H{value.semester_id[4]}"
-            property_type = 'residenziale' if any(x in value.property_type for x in ['residen', 'abitaz', 'ville']) else value.property_type
+            # Normalize property type using mapping, fallback to lowercase original
+            property_type = PROPERTY_TYPE_MAPPING.get(
+                value.property_type.lower(),
+                value.property_type.lower().replace(' ', '_')
+            )
 
             raw_data = {
                 'original_property_type': value.property_type,
@@ -1104,73 +1130,81 @@ class DatabaseLoader:
                 logger.warning(f"Failed to aggregate {segment} for {municipality_id}/{period_id}: {e}")
 
     def aggregate_zone_values(self, municipality_id: str, period_id: str):
-        """Aggregate raw values to zone level for mart table."""
+        """Aggregate raw values to zone level for mart table for all segments."""
         self._ensure_connection()
 
-        try:
-            # Aggregate zone values for residential properties
-            self.cursor.execute("""
-                INSERT INTO mart.omi_zone_values_semester (
-                    omi_zone_id, period_id, property_segment,
-                    value_min_eur_sqm, value_max_eur_sqm, value_mid_eur_sqm,
-                    rent_min_eur_sqm_month, rent_max_eur_sqm_month, rent_mid_eur_sqm_month,
-                    zone_type, gross_yield_pct, data_quality_score, updated_at
-                )
-                SELECT
-                    r.omi_zone_id,
-                    r.period_id,
-                    'residential' AS property_segment,
-                    MIN(r.value_min_eur_sqm) AS value_min_eur_sqm,
-                    MAX(r.value_max_eur_sqm) AS value_max_eur_sqm,
-                    AVG((COALESCE(r.value_min_eur_sqm, 0) + COALESCE(r.value_max_eur_sqm, 0)) / 2)
-                        FILTER (WHERE r.value_min_eur_sqm IS NOT NULL OR r.value_max_eur_sqm IS NOT NULL) AS value_mid_eur_sqm,
-                    MIN(r.rent_min_eur_sqm_month) AS rent_min_eur_sqm_month,
-                    MAX(r.rent_max_eur_sqm_month) AS rent_max_eur_sqm_month,
-                    AVG((COALESCE(r.rent_min_eur_sqm_month, 0) + COALESCE(r.rent_max_eur_sqm_month, 0)) / 2)
-                        FILTER (WHERE r.rent_min_eur_sqm_month IS NOT NULL OR r.rent_max_eur_sqm_month IS NOT NULL) AS rent_mid_eur_sqm_month,
-                    z.zone_type,
-                    CASE
-                        WHEN AVG((COALESCE(r.value_min_eur_sqm, 0) + COALESCE(r.value_max_eur_sqm, 0)) / 2)
-                            FILTER (WHERE r.value_min_eur_sqm IS NOT NULL OR r.value_max_eur_sqm IS NOT NULL) > 0
-                        THEN ROUND(
-                            (AVG((COALESCE(r.rent_min_eur_sqm_month, 0) + COALESCE(r.rent_max_eur_sqm_month, 0)) / 2)
-                                FILTER (WHERE r.rent_min_eur_sqm_month IS NOT NULL OR r.rent_max_eur_sqm_month IS NOT NULL) * 12
-                            / AVG((COALESCE(r.value_min_eur_sqm, 0) + COALESCE(r.value_max_eur_sqm, 0)) / 2)
-                                FILTER (WHERE r.value_min_eur_sqm IS NOT NULL OR r.value_max_eur_sqm IS NOT NULL)) * 100
-                        , 2)
-                        ELSE NULL
-                    END AS gross_yield_pct,
-                    100.0 AS data_quality_score,
-                    NOW() AS updated_at
-                FROM raw.omi_property_values r
-                LEFT JOIN core.omi_zones z ON r.omi_zone_id = z.omi_zone_id
-                WHERE r.municipality_id = %s
-                  AND r.period_id = %s
-                  AND r.property_type = 'residenziale'
-                  AND r.state IN ('NORMALE', 'normale', NULL)
-                  AND r.omi_zone_id IS NOT NULL
-                GROUP BY r.omi_zone_id, r.period_id, z.zone_type
-                ON CONFLICT (omi_zone_id, period_id, property_segment)
-                DO UPDATE SET
-                    value_min_eur_sqm = EXCLUDED.value_min_eur_sqm,
-                    value_max_eur_sqm = EXCLUDED.value_max_eur_sqm,
-                    value_mid_eur_sqm = EXCLUDED.value_mid_eur_sqm,
-                    rent_min_eur_sqm_month = EXCLUDED.rent_min_eur_sqm_month,
-                    rent_max_eur_sqm_month = EXCLUDED.rent_max_eur_sqm_month,
-                    rent_mid_eur_sqm_month = EXCLUDED.rent_mid_eur_sqm_month,
-                    zone_type = EXCLUDED.zone_type,
-                    gross_yield_pct = EXCLUDED.gross_yield_pct,
-                    data_quality_score = EXCLUDED.data_quality_score,
-                    updated_at = EXCLUDED.updated_at
-            """, (municipality_id, period_id))
+        # Same segment mappings as municipality aggregation
+        segment_mappings = {
+            'residential': ['residenziale'],
+            'commercial': ['negozi', 'uffici'],
+            'industrial': ['capannoni', 'magazzini', 'laboratori'],
+        }
 
-            zones_aggregated = self.cursor.rowcount
-            self.conn.commit()
-            if zones_aggregated > 0:
-                logger.debug(f"Aggregated {zones_aggregated} zones for {municipality_id}/{period_id}")
-        except Exception as e:
-            self.conn.rollback()
-            logger.warning(f"Failed to aggregate zones for {municipality_id}/{period_id}: {e}")
+        for segment, property_types in segment_mappings.items():
+            try:
+                placeholders = ','.join(['%s'] * len(property_types))
+                self.cursor.execute(f"""
+                    INSERT INTO mart.omi_zone_values_semester (
+                        omi_zone_id, period_id, property_segment,
+                        value_min_eur_sqm, value_max_eur_sqm, value_mid_eur_sqm,
+                        rent_min_eur_sqm_month, rent_max_eur_sqm_month, rent_mid_eur_sqm_month,
+                        zone_type, gross_yield_pct, data_quality_score, updated_at
+                    )
+                    SELECT
+                        r.omi_zone_id,
+                        r.period_id,
+                        %s AS property_segment,
+                        MIN(r.value_min_eur_sqm) AS value_min_eur_sqm,
+                        MAX(r.value_max_eur_sqm) AS value_max_eur_sqm,
+                        AVG((COALESCE(r.value_min_eur_sqm, 0) + COALESCE(r.value_max_eur_sqm, 0)) / 2)
+                            FILTER (WHERE r.value_min_eur_sqm IS NOT NULL OR r.value_max_eur_sqm IS NOT NULL) AS value_mid_eur_sqm,
+                        MIN(r.rent_min_eur_sqm_month) AS rent_min_eur_sqm_month,
+                        MAX(r.rent_max_eur_sqm_month) AS rent_max_eur_sqm_month,
+                        AVG((COALESCE(r.rent_min_eur_sqm_month, 0) + COALESCE(r.rent_max_eur_sqm_month, 0)) / 2)
+                            FILTER (WHERE r.rent_min_eur_sqm_month IS NOT NULL OR r.rent_max_eur_sqm_month IS NOT NULL) AS rent_mid_eur_sqm_month,
+                        z.zone_type,
+                        CASE
+                            WHEN AVG((COALESCE(r.value_min_eur_sqm, 0) + COALESCE(r.value_max_eur_sqm, 0)) / 2)
+                                FILTER (WHERE r.value_min_eur_sqm IS NOT NULL OR r.value_max_eur_sqm IS NOT NULL) > 0
+                            THEN ROUND(
+                                (AVG((COALESCE(r.rent_min_eur_sqm_month, 0) + COALESCE(r.rent_max_eur_sqm_month, 0)) / 2)
+                                    FILTER (WHERE r.rent_min_eur_sqm_month IS NOT NULL OR r.rent_max_eur_sqm_month IS NOT NULL) * 12
+                                / AVG((COALESCE(r.value_min_eur_sqm, 0) + COALESCE(r.value_max_eur_sqm, 0)) / 2)
+                                    FILTER (WHERE r.value_min_eur_sqm IS NOT NULL OR r.value_max_eur_sqm IS NOT NULL)) * 100
+                            , 2)
+                            ELSE NULL
+                        END AS gross_yield_pct,
+                        100.0 AS data_quality_score,
+                        NOW() AS updated_at
+                    FROM raw.omi_property_values r
+                    LEFT JOIN core.omi_zones z ON r.omi_zone_id = z.omi_zone_id
+                    WHERE r.municipality_id = %s
+                      AND r.period_id = %s
+                      AND r.property_type IN ({placeholders})
+                      AND r.state IN ('NORMALE', 'normale', NULL)
+                      AND r.omi_zone_id IS NOT NULL
+                    GROUP BY r.omi_zone_id, r.period_id, z.zone_type
+                    ON CONFLICT (omi_zone_id, period_id, property_segment)
+                    DO UPDATE SET
+                        value_min_eur_sqm = EXCLUDED.value_min_eur_sqm,
+                        value_max_eur_sqm = EXCLUDED.value_max_eur_sqm,
+                        value_mid_eur_sqm = EXCLUDED.value_mid_eur_sqm,
+                        rent_min_eur_sqm_month = EXCLUDED.rent_min_eur_sqm_month,
+                        rent_max_eur_sqm_month = EXCLUDED.rent_max_eur_sqm_month,
+                        rent_mid_eur_sqm_month = EXCLUDED.rent_mid_eur_sqm_month,
+                        zone_type = EXCLUDED.zone_type,
+                        gross_yield_pct = EXCLUDED.gross_yield_pct,
+                        data_quality_score = EXCLUDED.data_quality_score,
+                        updated_at = EXCLUDED.updated_at
+                """, (segment, municipality_id, period_id, *property_types))
+
+                zones_aggregated = self.cursor.rowcount
+                self.conn.commit()
+                if zones_aggregated > 0:
+                    logger.debug(f"Aggregated {zones_aggregated} {segment} zones for {municipality_id}/{period_id}")
+            except Exception as e:
+                self.conn.rollback()
+                logger.warning(f"Failed to aggregate {segment} zones for {municipality_id}/{period_id}: {e}")
 
     def delete_raw_municipality_data(self, municipality_id: str, period_id: str):
         """Delete raw data for a municipality after aggregation to save storage."""
