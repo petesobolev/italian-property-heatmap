@@ -27,7 +27,22 @@ tail -20 ingestion/omi/omi_2018_ingestion.log
 ### Ingestion Script Details
 - Location: `ingestion/omi/load_omi_values.py`
 - Uses `--skip-loaded` flag to skip already-processed municipalities
-- Auto-deletes raw data after aggregation to save storage (0.5GB limit)
+- Auto-deletes raw data after aggregation to save storage
+- `--force-zone-reload` flag: Re-ingest to populate zone-level historical data
+- `--calculate-zone-changes` flag: Calculate zone change metrics after ingestion
+
+### Zone Historical Re-ingestion
+To populate zone-level value change data, run:
+```bash
+cd ingestion/omi
+# Re-ingest each year with zone aggregation
+for year in 2016 2017 2018 2019 2020 2021 2022 2023 2024 2025; do
+    python load_omi_values.py --year $year --force-zone-reload --skip-loaded 2>&1 | tee omi_zone_${year}.log
+done
+
+# After all years complete, calculate change metrics
+python load_omi_values.py --calculate-zone-changes
+```
 
 ## Recent Features Added
 
@@ -45,8 +60,9 @@ tail -20 ingestion/omi/omi_2018_ingestion.log
 - Diverging color scale: red (declining) → gray (stable) → green (growing)
 
 ## Database Notes
-- Using Supabase with 0.5GB storage limit on free plan
-- Raw data is auto-deleted after aggregation to stay under limit
+- Using Supabase (upgraded plan with expanded storage)
+- Raw data is auto-deleted after aggregation to conserve space
+- Zone values stored in `mart.omi_zone_values_semester`
 - `spatial_ref_sys` RLS warning is a known PostGIS/Supabase limitation (cannot fix)
 
 ## Tech Stack
