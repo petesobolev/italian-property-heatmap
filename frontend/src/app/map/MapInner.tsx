@@ -1169,6 +1169,7 @@ export function MapInner() {
           municipalityId={effectiveMunicipalityId}
           visible={currentZoom >= 11}
           metric={filters.metric}
+          valueChangePeriod={filters.valueChangePeriod}
           onZoneClick={handleZoneClick}
         />
         {/* Labels layer on top of polygons for readability */}

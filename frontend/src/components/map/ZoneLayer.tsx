@@ -20,6 +20,7 @@ interface ZoneLayerProps {
   municipalityId: string | null;
   visible: boolean;
   metric?: MetricType;
+  valueChangePeriod?: number;
   onZoneClick?: (municipalityId: string) => void;
 }
 
@@ -58,12 +59,20 @@ const COLOR_SCALES: Record<string, number[][]> = {
     [252, 141, 89],
     [215, 48, 39],    // Red (high variance)
   ],
+  value_pct_change: [
+    [215, 48, 39],    // Deep red (declining)
+    [252, 141, 89],   // Light red
+    [229, 231, 235],  // Neutral gray
+    [134, 239, 172],  // Light green
+    [22, 163, 74],    // Deep green (growing)
+  ],
 };
 
 // Fixed ranges for certain metrics (must match MapInner.tsx and MapLegend.tsx)
 const FIXED_RANGES: Record<string, { min: number; max: number }> = {
   price_variance_pct: { min: 0, max: 100 },
   gross_yield_pct: { min: 2, max: 8 }, // Typical Italian yields range
+  value_pct_change: { min: -20, max: 20 }, // +/- 20% range for value change
 };
 
 const NO_DATA_COLOR = "rgba(42, 45, 53, 0.6)"; // Neutral gray for missing data
@@ -81,6 +90,9 @@ function formatMetricValue(value: number | null, metric: string): string {
       return `${value.toFixed(1)}% yield`;
     case "price_variance_pct":
       return `${value.toFixed(0)}% variance`;
+    case "value_pct_change":
+      const sign = value >= 0 ? "+" : "";
+      return `${sign}${value.toFixed(1)}%`;
     default:
       return `€${Math.round(value).toLocaleString()}/m²`;
   }
@@ -119,7 +131,7 @@ function createLabelIcon(zoneCode: string, zoneName: string | null): L.DivIcon {
   });
 }
 
-export function ZoneLayer({ municipalityId, visible, metric = "value_mid_eur_sqm", onZoneClick }: ZoneLayerProps) {
+export function ZoneLayer({ municipalityId, visible, metric = "value_mid_eur_sqm", valueChangePeriod, onZoneClick }: ZoneLayerProps) {
   const map = useMap();
   const [zones, setZones] = useState<FeatureCollection | null>(null);
   const [loading, setLoading] = useState(false);
@@ -166,7 +178,6 @@ export function ZoneLayer({ municipalityId, visible, metric = "value_mid_eur_sqm
       "forecast_gross_yield_pct",
       "opportunity_score",
       "confidence_score",
-      "value_pct_change",
     ];
     if (municipalityOnlyMetrics.includes(metric)) {
       setZones(null);
@@ -178,9 +189,12 @@ export function ZoneLayer({ municipalityId, visible, metric = "value_mid_eur_sqm
     async function fetchZones() {
       setLoading(true);
       try {
-        const response = await fetch(
-          `/api/zones/geojson?municipality_id=${municipalityId}&segment=residential&metric=${metric}`
-        );
+        // Build URL with optional changeYears parameter for value change metric
+        let url = `/api/zones/geojson?municipality_id=${municipalityId}&segment=residential&metric=${metric}`;
+        if (metric === "value_pct_change" && valueChangePeriod !== undefined) {
+          url += `&changeYears=${valueChangePeriod}`;
+        }
+        const response = await fetch(url);
         if (!response.ok) {
           console.warn("Failed to fetch zones");
           return;
@@ -218,7 +232,7 @@ export function ZoneLayer({ municipalityId, visible, metric = "value_mid_eur_sqm
     return () => {
       cancelled = true;
     };
-  }, [municipalityId, metric]);
+  }, [municipalityId, metric, valueChangePeriod]);
 
   // Color function for zones - uses metric-specific color scale
   const colorFor = useCallback(

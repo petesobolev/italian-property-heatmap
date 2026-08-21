@@ -22,6 +22,81 @@ interface ZoneValueRow {
   value_pct_change_1s: number | null;
 }
 
+// Calculate value percentage change for zones
+async function calculateZoneValueChange(
+  supabase: ReturnType<typeof createSupabaseServerClient>,
+  zoneIds: string[],
+  segment: string,
+  changeYears: number
+): Promise<Map<string, number | null>> {
+  // Get available periods for zones
+  const { data: periods } = await supabase
+    .schema("mart")
+    .from("omi_zone_values_semester")
+    .select("period_id")
+    .in("omi_zone_id", zoneIds)
+    .eq("property_segment", segment)
+    .not("value_mid_eur_sqm", "is", null)
+    .order("period_id", { ascending: false });
+
+  const allPeriods = [...new Set(periods?.map(p => p.period_id) ?? [])].sort().reverse();
+
+  if (allPeriods.length < 2) {
+    return new Map();
+  }
+
+  // Determine how many semesters to look back (2 semesters per year)
+  // changeYears = 0 means "max" (go back to earliest available)
+  const semestersBack = changeYears === 0
+    ? allPeriods.length - 1
+    : changeYears * 2;
+
+  const currentPeriod = allPeriods[0];
+  const comparisonIndex = Math.min(semestersBack, allPeriods.length - 1);
+  const comparisonPeriod = allPeriods[comparisonIndex];
+
+  // Fetch values for both periods
+  const [currentData, comparisonData] = await Promise.all([
+    supabase
+      .schema("mart")
+      .from("omi_zone_values_semester")
+      .select("omi_zone_id, value_mid_eur_sqm")
+      .in("omi_zone_id", zoneIds)
+      .eq("period_id", currentPeriod)
+      .eq("property_segment", segment)
+      .not("value_mid_eur_sqm", "is", null),
+    supabase
+      .schema("mart")
+      .from("omi_zone_values_semester")
+      .select("omi_zone_id, value_mid_eur_sqm")
+      .in("omi_zone_id", zoneIds)
+      .eq("period_id", comparisonPeriod)
+      .eq("property_segment", segment)
+      .not("value_mid_eur_sqm", "is", null),
+  ]);
+
+  const currentMap = new Map(
+    (currentData.data ?? []).map(r => [r.omi_zone_id, r.value_mid_eur_sqm])
+  );
+  const comparisonMap = new Map(
+    (comparisonData.data ?? []).map(r => [r.omi_zone_id, r.value_mid_eur_sqm])
+  );
+
+  // Calculate percentage changes
+  const result = new Map<string, number | null>();
+  for (const zoneId of zoneIds) {
+    const currentValue = currentMap.get(zoneId);
+    const pastValue = comparisonMap.get(zoneId);
+    if (currentValue && pastValue && pastValue > 0) {
+      result.set(zoneId, ((currentValue - pastValue) / pastValue) * 100);
+    } else {
+      result.set(zoneId, null);
+    }
+  }
+
+  return result;
+}
+
 // Calculate metric value from zone data
 function calculateZoneMetricValue(
   row: ZoneValueRow,
@@ -285,6 +360,7 @@ export async function GET(request: Request) {
   const municipalityId = searchParams.get("municipality_id");
   const segment = searchParams.get("segment") ?? "residential";
   const metric = searchParams.get("metric") ?? "value_mid_eur_sqm";
+  const changeYears = Number(searchParams.get("changeYears") ?? "1");
 
   if (!municipalityId) {
     return NextResponse.json(
@@ -320,6 +396,51 @@ export async function GET(request: Request) {
 
     // Query values using both ID formats - fetch all columns needed for metric calculations
     const allZoneIds = [...new Set([...zoneIds, ...istatZoneIds])];
+
+    // Handle value_pct_change metric separately - needs historical comparison
+    if (metric === "value_pct_change") {
+      const valueChangeMap = await calculateZoneValueChange(supabase, allZoneIds, segment, changeYears);
+
+      // Build map by zone code (to handle both ID formats)
+      const valuesByZoneCode = new Map<string, number | null>();
+      for (const [zoneId, value] of valueChangeMap) {
+        const zoneCode = zoneId.split("_").slice(1).join("_");
+        if (!valuesByZoneCode.has(zoneCode)) {
+          valuesByZoneCode.set(zoneCode, value);
+        }
+      }
+
+      for (const feature of geojsonData.features) {
+        const zoneCode = feature.properties.omi_zone_id.split("_").slice(1).join("_");
+        feature.properties.metric_value = valuesByZoneCode.get(zoneCode) ?? null;
+        feature.properties.value_mid_eur_sqm = null; // Not applicable for this metric
+      }
+
+      // Sort by area for proper z-ordering
+      const getArea = (geom: GeoJSON.Geometry | null): number => {
+        if (!geom) return 0;
+        const bbox = getBoundingBox(geom);
+        if (!bbox) return 0;
+        return (bbox[2] - bbox[0]) * (bbox[3] - bbox[1]);
+      };
+
+      geojsonData.features.sort((a: { geometry: GeoJSON.Geometry | null }, b: { geometry: GeoJSON.Geometry | null }) => {
+        return getArea(b.geometry) - getArea(a.geometry);
+      });
+
+      return NextResponse.json({
+        ...geojsonData,
+        municipality_id: municipalityId,
+        segment,
+        metric,
+        changeYears,
+        source: "database",
+      }, {
+        headers: {
+          "Cache-Control": "public, max-age=300, s-maxage=3600, stale-while-revalidate=86400",
+        },
+      });
+    }
 
     const { data: values } = await supabase
       .schema("mart")
