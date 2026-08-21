@@ -137,6 +137,7 @@ export function ZoneLayer({ municipalityId, visible, metric = "value_mid_eur_sqm
   const [loading, setLoading] = useState(false);
   const [currentZoom, setCurrentZoom] = useState(map.getZoom());
   const [valueDomain, setValueDomain] = useState<{ min: number; max: number }>({ min: 0, max: 0 });
+  const [valueSource, setValueSource] = useState<string | null>(null); // Track if using municipality fallback
 
   // Create a custom pane for zones to ensure they render above municipalities
   useEffect(() => {
@@ -203,6 +204,8 @@ export function ZoneLayer({ municipalityId, visible, metric = "value_mid_eur_sqm
         if (cancelled) return;
 
         setZones(data);
+        // Track the value source for tooltip display
+        setValueSource(data.valueSource ?? null);
 
         // Calculate value domain for coloring (use fixed range if defined)
         const fixedRange = FIXED_RANGES[metric];
@@ -349,7 +352,14 @@ export function ZoneLayer({ municipalityId, visible, metric = "value_mid_eur_sqm
       // Show metric value with proper formatting
       const formattedValue = formatMetricValue(value, metric);
       const valueColor = value != null ? "#4a90b5" : "#6b7a90";
-      tooltipContent += `<br/><span style="color: ${valueColor}; font-weight: 600">${formattedValue}</span>`;
+
+      // For value change with municipality fallback, show indicator
+      if (metric === "value_pct_change" && valueSource === "municipality_fallback" && value != null) {
+        tooltipContent += `<br/><span style="color: ${valueColor}; font-weight: 600">Municipality avg: ${formattedValue}</span>`;
+        tooltipContent += `<br/><span style="color: #6b7a90; font-size: 0.7rem; font-style: italic">Zone-level data unavailable</span>`;
+      } else {
+        tooltipContent += `<br/><span style="color: ${valueColor}; font-weight: 600">${formattedValue}</span>`;
+      }
 
       if (props.zone_type) {
         const typeLabel = getZoneTypeLabel(props.zone_type);
@@ -386,7 +396,7 @@ export function ZoneLayer({ municipalityId, visible, metric = "value_mid_eur_sqm
         },
       });
     },
-    [metric, municipalityId, onZoneClick] // Depend on metric for proper tooltip formatting
+    [metric, municipalityId, onZoneClick, valueSource] // Depend on metric and valueSource for proper tooltip formatting
   );
 
   // Calculate zone centers for labels
@@ -424,7 +434,7 @@ export function ZoneLayer({ municipalityId, visible, metric = "value_mid_eur_sqm
     <>
       <GeoJSON
         ref={geoJsonRef}
-        key={`zones-${municipalityId}-${metric}-${valueDomain.min}-${valueDomain.max}`}
+        key={`zones-${municipalityId}-${metric}-${valueDomain.min}-${valueDomain.max}-${valueSource ?? 'default'}`}
         data={zones}
         style={style}
         onEachFeature={onEachFeature}
