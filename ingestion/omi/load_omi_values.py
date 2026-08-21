@@ -1193,6 +1193,110 @@ class DatabaseLoader:
         self.cursor.close()
         self.conn.close()
 
+    def calculate_zone_change_metrics(self):
+        """Calculate value_pct_change_1s and value_pct_change_2s for all zone values."""
+        self._ensure_connection()
+
+        logger.info("Calculating zone change metrics...")
+
+        try:
+            # Update zone premium vs municipality
+            logger.info("  Calculating zone premium vs municipality...")
+            self.cursor.execute("""
+                WITH municipality_avg AS (
+                    SELECT
+                        m.municipality_id,
+                        m.period_id,
+                        m.property_segment,
+                        m.value_mid_eur_sqm AS muni_avg
+                    FROM mart.municipality_values_semester m
+                )
+                UPDATE mart.omi_zone_values_semester z
+                SET zone_premium_vs_municipality = ROUND(
+                    ((z.value_mid_eur_sqm - ma.muni_avg) / NULLIF(ma.muni_avg, 0)) * 100, 2
+                )
+                FROM core.omi_zones oz, municipality_avg ma
+                WHERE z.omi_zone_id = oz.omi_zone_id
+                  AND oz.municipality_id = ma.municipality_id
+                  AND z.period_id = ma.period_id
+                  AND z.property_segment = ma.property_segment
+                  AND z.value_mid_eur_sqm IS NOT NULL
+                  AND ma.muni_avg IS NOT NULL
+            """)
+            premium_updated = self.cursor.rowcount
+            logger.info(f"  Updated {premium_updated} zone premium values")
+
+            # Calculate change metrics (vs prior semester and prior year)
+            logger.info("  Calculating semester-over-semester and year-over-year changes...")
+            self.cursor.execute("""
+                WITH zone_values AS (
+                    SELECT
+                        omi_zone_id,
+                        period_id,
+                        property_segment,
+                        value_mid_eur_sqm,
+                        -- Previous semester (1 semester back)
+                        CASE
+                            WHEN period_id LIKE '%H1' THEN CONCAT(CAST(LEFT(period_id, 4)::int - 1 AS text), 'H2')
+                            WHEN period_id LIKE '%H2' THEN CONCAT(LEFT(period_id, 4), 'H1')
+                        END AS prev_1s_period,
+                        -- Previous year same semester (2 semesters back)
+                        CASE
+                            WHEN period_id LIKE '%H1' THEN CONCAT(CAST(LEFT(period_id, 4)::int - 1 AS text), 'H1')
+                            WHEN period_id LIKE '%H2' THEN CONCAT(CAST(LEFT(period_id, 4)::int - 1 AS text), 'H2')
+                        END AS prev_2s_period
+                    FROM mart.omi_zone_values_semester
+                ),
+                with_prev_values AS (
+                    SELECT
+                        zv.omi_zone_id,
+                        zv.period_id,
+                        zv.property_segment,
+                        zv.value_mid_eur_sqm,
+                        prev1.value_mid_eur_sqm AS prev_1s_value,
+                        prev2.value_mid_eur_sqm AS prev_2s_value
+                    FROM zone_values zv
+                    LEFT JOIN mart.omi_zone_values_semester prev1
+                        ON zv.omi_zone_id = prev1.omi_zone_id
+                        AND zv.prev_1s_period = prev1.period_id
+                        AND zv.property_segment = prev1.property_segment
+                    LEFT JOIN mart.omi_zone_values_semester prev2
+                        ON zv.omi_zone_id = prev2.omi_zone_id
+                        AND zv.prev_2s_period = prev2.period_id
+                        AND zv.property_segment = prev2.property_segment
+                )
+                UPDATE mart.omi_zone_values_semester m
+                SET
+                    value_pct_change_1s = ROUND(((wpv.value_mid_eur_sqm - wpv.prev_1s_value) / NULLIF(wpv.prev_1s_value, 0)) * 100, 2),
+                    value_pct_change_2s = ROUND(((wpv.value_mid_eur_sqm - wpv.prev_2s_value) / NULLIF(wpv.prev_2s_value, 0)) * 100, 2)
+                FROM with_prev_values wpv
+                WHERE m.omi_zone_id = wpv.omi_zone_id
+                  AND m.period_id = wpv.period_id
+                  AND m.property_segment = wpv.property_segment
+            """)
+            changes_updated = self.cursor.rowcount
+            self.conn.commit()
+            logger.info(f"  Updated {changes_updated} zone change metrics")
+
+            # Summary stats
+            self.cursor.execute("""
+                SELECT
+                    COUNT(DISTINCT omi_zone_id) AS zones,
+                    COUNT(DISTINCT period_id) AS periods,
+                    COUNT(*) AS total_rows,
+                    COUNT(value_pct_change_1s) AS with_1s_change,
+                    COUNT(value_pct_change_2s) AS with_2s_change
+                FROM mart.omi_zone_values_semester
+            """)
+            stats = self.cursor.fetchone()
+            logger.info(f"Zone values summary: {stats[0]} zones, {stats[1]} periods, {stats[2]} total rows")
+            logger.info(f"  With 1-semester change: {stats[3]}, with YoY change: {stats[4]}")
+
+        except Exception as e:
+            self.conn.rollback()
+            logger.error(f"Failed to calculate zone change metrics: {e}")
+            raise
+
 
 def load_env_variables() -> dict:
     """Load database connection parameters from environment."""
@@ -1709,12 +1813,29 @@ def main():
         help='Force re-ingestion to populate zone-level data (ignores existing municipality data)'
     )
 
+    parser.add_argument(
+        '--calculate-zone-changes',
+        action='store_true',
+        help='Calculate zone change metrics (run after historical data is fully ingested)'
+    )
+
     args = parser.parse_args()
 
     if args.verbose:
         logging.getLogger().setLevel(logging.DEBUG)
 
     try:
+        # Handle zone change calculation separately
+        if args.calculate_zone_changes:
+            db_params = load_env_variables()
+            db_loader = DatabaseLoader(db_params)
+            try:
+                db_loader.calculate_zone_change_metrics()
+                logger.info("Zone change metrics calculation complete!")
+            finally:
+                db_loader.close()
+            sys.exit(0)
+
         run_ingestion(
             provinces=args.provinces,
             semesters=args.semesters,
