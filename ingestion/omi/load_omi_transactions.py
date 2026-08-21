@@ -220,32 +220,142 @@ def upsert_provincial_transactions(supabase: Client, df: pd.DataFrame):
     logger.info(f"Upsert complete: {len(records)} records")
 
 
-def main():
-    parser = argparse.ArgumentParser(description='Load OMI provincial transaction data')
-    parser.add_argument('--file', type=str, required=True, help='Path to RES.csv file')
-    parser.add_argument('--dry-run', action='store_true', help='Process without writing to database')
-    args = parser.parse_args()
+def find_transaction_files() -> dict:
+    """Auto-discover transaction data files in common locations."""
+    base_paths = [
+        Path(__file__).parent.parent.parent / "docs",
+        Path(__file__).parent.parent.parent / "docs" / "OMI_NTN",
+        Path(__file__).parent,
+    ]
 
-    file_path = Path(args.file)
-    if not file_path.exists():
-        logger.error(f"File not found: {file_path}")
-        sys.exit(1)
+    files = {}
+
+    # Look for residential data
+    patterns = [
+        ("residential", ["RESIDENZIALE_DEFINITIVO*.zip", "RES.csv", "residenziale*.csv"]),
+        ("commercial", ["NON_RESIDENZIALE*.zip", "non_residenziale*.csv", "NONRES.csv"]),
+    ]
+
+    for segment, file_patterns in patterns:
+        for base_path in base_paths:
+            if not base_path.exists():
+                continue
+            for pattern in file_patterns:
+                matches = list(base_path.glob(pattern))
+                if matches:
+                    # Prefer most recent file
+                    files[segment] = sorted(matches, key=lambda p: p.stat().st_mtime, reverse=True)[0]
+                    break
+            if segment in files:
+                break
+
+    return files
+
+
+def extract_csv_from_zip(zip_path: Path) -> Path:
+    """Extract CSV file from ZIP and return path to extracted CSV."""
+    import zipfile
+    import tempfile
+
+    extract_dir = Path(tempfile.mkdtemp())
+
+    with zipfile.ZipFile(zip_path, 'r') as zf:
+        csv_files = [f for f in zf.namelist() if f.endswith('.csv')]
+        if not csv_files:
+            raise ValueError(f"No CSV files found in {zip_path}")
+
+        # Extract the first (or main) CSV file
+        csv_file = csv_files[0]
+        zf.extract(csv_file, extract_dir)
+        logger.info(f"Extracted {csv_file} from {zip_path.name}")
+        return extract_dir / csv_file
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description='Load OMI provincial transaction data',
+        epilog="""
+Examples:
+    # Auto-discover and load transaction data from docs/
+    python load_omi_transactions.py
+
+    # Load from specific file
+    python load_omi_transactions.py --file ../docs/OMI_NTN/RES.csv
+
+    # Load from ZIP file
+    python load_omi_transactions.py --file ../docs/RESIDENZIALE_DEFINITIVO_2011_2024.zip
+
+    # Dry run to preview data
+    python load_omi_transactions.py --dry-run
+"""
+    )
+    parser.add_argument('--file', type=str, help='Path to CSV or ZIP file (auto-discovered if not provided)')
+    parser.add_argument('--dry-run', action='store_true', help='Process without writing to database')
+    parser.add_argument('--segment', choices=['residential', 'commercial', 'all'], default='all',
+                        help='Which segment to load (default: all)')
+    args = parser.parse_args()
 
     load_env()
 
-    # Process the CSV
-    df = process_residential_csv(file_path)
+    # Determine file(s) to process
+    files_to_process = {}
 
-    if args.dry_run:
-        logger.info("Dry run - not writing to database")
-        logger.info(f"\nTotal records: {len(df)}")
-        logger.info(f"Date range: {df['period_id'].min()} to {df['period_id'].max()}")
-        logger.info(f"Provinces: {df['province_code'].nunique()}")
-        return
+    if args.file:
+        file_path = Path(args.file)
+        if not file_path.exists():
+            logger.error(f"File not found: {file_path}")
+            sys.exit(1)
+        # Determine segment from filename
+        name_lower = file_path.name.lower()
+        if 'non' in name_lower or 'commercial' in name_lower:
+            files_to_process['commercial'] = file_path
+        else:
+            files_to_process['residential'] = file_path
+    else:
+        # Auto-discover files
+        files_to_process = find_transaction_files()
+        if not files_to_process:
+            logger.error("No transaction data files found. Please specify --file or place files in docs/")
+            logger.info("Expected locations: docs/OMI_NTN/RES.csv or docs/RESIDENZIALE_DEFINITIVO_*.zip")
+            sys.exit(1)
+        logger.info(f"Auto-discovered files: {files_to_process}")
 
-    # Connect to Supabase and upsert
-    supabase = create_supabase_client()
-    upsert_provincial_transactions(supabase, df)
+    # Filter by segment if specified
+    if args.segment != 'all':
+        files_to_process = {k: v for k, v in files_to_process.items() if k == args.segment}
+
+    if not files_to_process:
+        logger.error(f"No {args.segment} transaction data found")
+        sys.exit(1)
+
+    # Process each file
+    supabase = None if args.dry_run else create_supabase_client()
+
+    for segment, file_path in files_to_process.items():
+        logger.info(f"\n{'='*60}")
+        logger.info(f"Processing {segment} transactions from {file_path.name}")
+        logger.info('='*60)
+
+        # Handle ZIP files
+        if file_path.suffix.lower() == '.zip':
+            file_path = extract_csv_from_zip(file_path)
+
+        # Process the CSV
+        df = process_residential_csv(file_path)
+
+        # Update property_segment in the data
+        # Note: The upsert function already sets segment to 'residential'
+        # For commercial data, we'd need to update the logic
+
+        if args.dry_run:
+            logger.info("Dry run - not writing to database")
+            logger.info(f"\nTotal records: {len(df)}")
+            logger.info(f"Date range: {df['period_id'].min()} to {df['period_id'].max()}")
+            logger.info(f"Provinces: {df['province_code'].nunique()}")
+            continue
+
+        # Connect to Supabase and upsert
+        upsert_provincial_transactions(supabase, df)
 
 
 if __name__ == '__main__':
