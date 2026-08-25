@@ -20,16 +20,19 @@ import {
 } from "@/components/map";
 import { CommandPalette } from "@/components/map/CommandPalette";
 
-// Southern Italian regions eligible for 7% flat tax regime for foreign pensioners
+// Regions eligible for 7% flat tax regime for foreign pensioners
 // ("Regime fiscale agevolato per i pensionati esteri")
 //
 // Legislative sources:
-// - Law 145/2018 (Legge di Bilancio 2019), Art. 1, paragraphs 273-274: Introduced the regime
-// - Law 197/2022 (Legge di Bilancio 2023): Raised population threshold from 20,000 to 30,000
+// - Law 145/2018 (Legge di Bilancio 2019), Art. 1, paragraphs 273-274: Southern Italy path
+// - Decree 189/2016: Sisma 2016 earthquake zone municipalities (Lazio, Marche, Umbria, Abruzzo)
 //
-// Eligible regions are the 8 Southern Italian regions (Mezzogiorno).
+// Eligibility is now database-driven (mart.flat_tax_eligibility) to include:
+// - Southern Italy (Mezzogiorno) regions with population < 20,000
+// - 2016 earthquake zone municipalities in central Italy
+//
+// This fallback set is only used if database data hasn't loaded yet.
 // Region codes are standard ISTAT codes.
-// Reference: https://www.agenziaentrate.gov.it
 const FLAT_TAX_ELIGIBLE_REGIONS = new Set([
   "13", // Abruzzo
   "14", // Molise
@@ -422,6 +425,11 @@ export function MapInner() {
   // Command palette state
   const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
   const [userLocation, setUserLocation] = useState<[number, number] | null>(null);
+
+  // Flat tax eligibility from database (includes Sisma 2016 municipalities)
+  const [flatTaxEligibility, setFlatTaxEligibility] = useState<
+    Record<string, string> // municipality_id -> eligibility_reason
+  >({});
   const mapRef = useRef<L.Map | null>(null);
 
   // Track active tooltip layer to prevent ghost tooltips
@@ -663,6 +671,31 @@ export function MapInner() {
     };
   }, [filters.metric, filters.region, filters.province, filters.propertySegment, filters.semestersToAverage, filters.valueChangePeriod]);
 
+  // Fetch flat tax eligibility data from database (includes Sisma 2016 municipalities)
+  useEffect(() => {
+    if (!filters.showFlatTaxEligible) return;
+
+    async function loadEligibility() {
+      try {
+        const res = await fetch("/api/map/flat-tax-eligibility");
+        if (!res.ok) {
+          console.warn("Failed to load flat tax eligibility data");
+          return;
+        }
+        const data = await res.json();
+        const eligibilityMap: Record<string, string> = {};
+        for (const item of data.municipalities || []) {
+          eligibilityMap[item.municipality_id] = item.eligibility_reason;
+        }
+        setFlatTaxEligibility(eligibilityMap);
+      } catch (err) {
+        console.error("Error loading flat tax eligibility:", err);
+      }
+    }
+
+    loadEligibility();
+  }, [filters.showFlatTaxEligible]);
+
   // Get visible municipality IDs based on current map bounds
   const visibleMunicipalityIds = useMemo(() => {
     if (!mapBounds || !geojson || geojson.type !== "FeatureCollection") {
@@ -761,28 +794,41 @@ export function MapInner() {
   );
 
   // Check if municipality is eligible for 7% flat tax
-  // Requirements: Southern Italy region + population under 30,000
-  // Population threshold: 20,000 (Law 145/2018) -> 30,000 (Law 197/2022)
+  // Now uses database-driven eligibility which includes:
+  // - Southern Italy (Mezzogiorno) regions with population < 20,000
+  // - Sisma 2016 earthquake zone municipalities (Lazio, Marche, Umbria) with population < 20,000
   const isFlatTaxEligible = useCallback((feature: Feature | undefined): boolean => {
     if (!feature?.properties) return false;
+    const municipalityId = feature.properties.municipality_id as string | undefined;
+
+    // Use database-driven eligibility if available
+    if (municipalityId && Object.keys(flatTaxEligibility).length > 0) {
+      return municipalityId in flatTaxEligibility;
+    }
+
+    // Fallback to region-based check if database data not loaded yet
     const regionCode = feature.properties.region_code as string | undefined;
     const population = feature.properties.population as number | null | undefined;
-
-    // Must be in Southern Italy region
     const inEligibleRegion = regionCode ? FLAT_TAX_ELIGIBLE_REGIONS.has(regionCode.padStart(2, "0")) : false;
-
-    // Must have population under 30,000 (if population data available)
-    const populationEligible = population === null || population === undefined || population < 30000;
-
+    const populationEligible = population === null || population === undefined || population < 20000;
     return inEligibleRegion && populationEligible;
-  }, []);
+  }, [flatTaxEligibility]);
 
-  // Check if municipality is in a flat tax eligible region (Southern Italy)
+  // Check if municipality is in a flat tax eligible region or zone
+  // Returns true for Southern Italy OR Sisma 2016 zone municipalities
   const isInEligibleRegion = useCallback((feature: Feature | undefined): boolean => {
     if (!feature?.properties) return false;
+    const municipalityId = feature.properties.municipality_id as string | undefined;
+
+    // If in database, it's in an eligible region/zone
+    if (municipalityId && Object.keys(flatTaxEligibility).length > 0) {
+      return municipalityId in flatTaxEligibility;
+    }
+
+    // Fallback to Southern Italy region check
     const regionCode = feature.properties.region_code as string | undefined;
     return regionCode ? FLAT_TAX_ELIGIBLE_REGIONS.has(regionCode.padStart(2, "0")) : false;
-  }, []);
+  }, [flatTaxEligibility]);
 
   // Style function for GeoJSON
   const style = useCallback(
@@ -792,26 +838,36 @@ export function MapInner() {
 
       if (filters.showFlatTaxEligible) {
         const isEligible = isFlatTaxEligible(feature);
-        const inRegion = isInEligibleRegion(feature);
+        const eligibilityReason = id ? flatTaxEligibility[id] : undefined;
 
-        if (isEligible) {
-          // Eligible: Southern Italy with population under 30k - Green
-          return {
-            color: "#22c55e",
-            weight: 2,
-            fillColor: "rgba(34, 197, 94, 0.4)",
-            fillOpacity: 0.7,
-          };
-        } else if (inRegion) {
-          // In Southern Italy but population too high (30k+) - Red/Orange
-          return {
-            color: "#ef4444",
-            weight: 2,
-            fillColor: "rgba(239, 68, 68, 0.4)",
-            fillOpacity: 0.7,
-          };
+        if (isEligible && eligibilityReason) {
+          if (eligibilityReason === "sisma_2016") {
+            // Sisma 2016 earthquake zone only - Yellow
+            return {
+              color: "#eab308",
+              weight: 2,
+              fillColor: "rgba(202, 138, 4, 0.5)",
+              fillOpacity: 0.7,
+            };
+          } else if (eligibilityReason === "southern_italy+sisma_2016") {
+            // Both Southern Italy AND Sisma 2016 - Orange (blend)
+            return {
+              color: "#f97316",
+              weight: 2,
+              fillColor: "rgba(249, 115, 22, 0.5)",
+              fillOpacity: 0.7,
+            };
+          } else {
+            // Southern Italy only - Green
+            return {
+              color: "#22c55e",
+              weight: 2,
+              fillColor: "rgba(34, 197, 94, 0.4)",
+              fillOpacity: 0.7,
+            };
+          }
         } else {
-          // Not in eligible region (Northern Italy) - Gray
+          // Not eligible - Gray
           return {
             color: "rgba(255, 255, 255, 0.1)",
             weight: 0.5,
@@ -828,7 +884,7 @@ export function MapInner() {
         fillOpacity: 0.65,
       };
     },
-    [valuesByMunicipality, colorFor, filters.showFlatTaxEligible, isFlatTaxEligible, isInEligibleRegion]
+    [valuesByMunicipality, colorFor, filters.showFlatTaxEligible, isFlatTaxEligible, flatTaxEligibility]
   );
 
   // Ref to always access the current style function (avoids stale closures)
@@ -1156,7 +1212,7 @@ export function MapInner() {
         <TileLayer attribution={DARK_ATTRIBUTION} url={DARK_TILES} />
         {geojson && (
           <GeoJSON
-            key={`${filters.metric}-${filters.propertySegment}-${filters.showFlatTaxEligible}-${filters.region || 'all'}-${filters.province || 'all'}-${filters.semestersToAverage}-${filters.valueChangePeriod ?? 'default'}-${Object.keys(valuesByMunicipality).length}`}
+            key={`${filters.metric}-${filters.propertySegment}-${filters.showFlatTaxEligible}-${filters.region || 'all'}-${filters.province || 'all'}-${filters.semestersToAverage}-${filters.valueChangePeriod ?? 'default'}-${Object.keys(valuesByMunicipality).length}-${Object.keys(flatTaxEligibility).length}`}
             data={geojson}
             style={style}
             onEachFeature={onEachFeature}
@@ -1205,6 +1261,7 @@ export function MapInner() {
         min={valueDomain.min}
         max={valueDomain.max}
         isLoading={loading}
+        showFlatTaxEligible={filters.showFlatTaxEligible}
       />
 
       {/* Loading overlay */}

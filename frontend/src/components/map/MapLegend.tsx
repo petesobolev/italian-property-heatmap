@@ -7,6 +7,7 @@ interface MapLegendProps {
   min: number;
   max: number;
   isLoading?: boolean;
+  showFlatTaxEligible?: boolean;
 }
 
 const METRIC_CONFIG: Record<
@@ -96,7 +97,7 @@ const METRIC_CONFIG: Record<
   },
 };
 
-export function MapLegend({ metric, min, max, isLoading }: MapLegendProps) {
+export function MapLegend({ metric, min, max, isLoading, showFlatTaxEligible }: MapLegendProps) {
   const config = METRIC_CONFIG[metric];
   const steps = 5;
 
@@ -104,6 +105,107 @@ export function MapLegend({ metric, min, max, isLoading }: MapLegendProps) {
   const displayMin = config.fixedRange?.min ?? min;
   const displayMax = config.fixedRange?.max ?? max;
   const range = displayMax - displayMin;
+
+  // Special legend for flat tax eligibility
+  if (showFlatTaxEligible) {
+    return (
+      <div className="map-legend map-legend--flat-tax">
+        <div className="map-legend__header">
+          <span className="map-legend__title">7% Flat Tax Eligibility</span>
+        </div>
+
+        <div className="flat-tax-legend">
+          <div className="flat-tax-legend__item">
+            <div
+              className="flat-tax-legend__swatch"
+              style={{ backgroundColor: "rgba(34, 197, 94, 0.5)", borderColor: "#22c55e" }}
+            />
+            <span className="flat-tax-legend__label">Southern Italy (Mezzogiorno)</span>
+          </div>
+          <div className="flat-tax-legend__item">
+            <div
+              className="flat-tax-legend__swatch"
+              style={{ backgroundColor: "rgba(202, 138, 4, 0.6)", borderColor: "#eab308" }}
+            />
+            <span className="flat-tax-legend__label">Sisma 2016 (Earthquake Zone)</span>
+          </div>
+          <div className="flat-tax-legend__item">
+            <div
+              className="flat-tax-legend__swatch"
+              style={{ backgroundColor: "rgba(249, 115, 22, 0.6)", borderColor: "#f97316" }}
+            />
+            <span className="flat-tax-legend__label">Both (Southern + Sisma)</span>
+          </div>
+          <div className="flat-tax-legend__item">
+            <div
+              className="flat-tax-legend__swatch flat-tax-legend__swatch--ineligible"
+              style={{ backgroundColor: "rgba(100, 100, 100, 0.4)", borderColor: "rgba(255, 255, 255, 0.2)" }}
+            />
+            <span className="flat-tax-legend__label">Not Eligible</span>
+          </div>
+        </div>
+
+        <style jsx>{`
+          .map-legend--flat-tax {
+            position: absolute;
+            bottom: 24px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 1000;
+            background: linear-gradient(165deg,
+              rgba(22, 25, 32, 0.95) 0%,
+              rgba(13, 15, 18, 0.97) 100%
+            );
+            backdrop-filter: blur(16px);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 12px;
+            padding: 12px 16px;
+            min-width: 260px;
+            box-shadow:
+              0 4px 20px rgba(0, 0, 0, 0.3),
+              inset 0 1px 0 rgba(255, 255, 255, 0.04);
+          }
+
+          .map-legend__header {
+            margin-bottom: 12px;
+          }
+
+          .map-legend__title {
+            font-size: 0.7rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+            color: #a8b3c7;
+          }
+
+          .flat-tax-legend {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+          }
+
+          .flat-tax-legend__item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+          }
+
+          .flat-tax-legend__swatch {
+            width: 20px;
+            height: 14px;
+            border-radius: 3px;
+            border: 2px solid;
+            flex-shrink: 0;
+          }
+
+          .flat-tax-legend__label {
+            font-size: 0.7rem;
+            color: #c8d3e3;
+          }
+        `}</style>
+      </div>
+    );
+  }
 
   return (
     <div className="map-legend">
