@@ -16,6 +16,11 @@ log() {
     echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" | tee -a "$CHAIN_LOG"
 }
 
+notify() {
+    # Send macOS notification
+    osascript -e "display notification \"$1\" with title \"OMI Ingestion\" sound name \"Ping\"" 2>/dev/null || true
+}
+
 get_log_age() {
     local log_file="$1"
     if [ -f "$log_file" ]; then
@@ -95,11 +100,13 @@ for year in "${YEARS[@]}"; do
 
         if is_year_complete "$year"; then
             log "$year completed successfully!"
+            notify "$year ingestion completed!"
             break
         fi
 
         if ! is_year_running "$year"; then
             log "$year process died unexpectedly, restarting..."
+            notify "$year process died - restarting"
             start_year "$year"
             sleep 30
             continue
@@ -111,6 +118,7 @@ for year in "${YEARS[@]}"; do
 
         if [ "$log_age" -gt "$STALL_THRESHOLD" ]; then
             log "STALL DETECTED: $log_file not updated for ${log_age}s"
+            notify "Stall detected in $year - restarting"
             kill_stalled "$year"
             start_year "$year"
             sleep 30
