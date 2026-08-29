@@ -7,8 +7,8 @@
 cd /Users/pete/Projects/italian-property-heatmap/ingestion/omi
 
 CHAIN_LOG="zone_ingestion_chain.log"
-CHECK_INTERVAL=300  # Check every 5 minutes
-STALL_THRESHOLD=900 # 15 minutes without log activity = stalled
+CHECK_INTERVAL=180  # Check every 3 minutes
+STALL_THRESHOLD=600 # 10 minutes without log activity = stalled
 
 YEARS=(2016 2017 2018 2019 2020 2021 2022 2023 2024 2025)
 
@@ -106,8 +106,8 @@ for year in "${YEARS[@]}"; do
         fi
 
         # Check for stalls
-        local log_file="omi_${year}_full.log"
-        local log_age=$(get_log_age "$log_file")
+        log_file="omi_${year}_full.log"
+        log_age=$(get_log_age "$log_file")
 
         if [ "$log_age" -gt "$STALL_THRESHOLD" ]; then
             log "STALL DETECTED: $log_file not updated for ${log_age}s"
@@ -116,7 +116,7 @@ for year in "${YEARS[@]}"; do
             sleep 30
         else
             # Show brief progress
-            local last_province=$(grep -E "Processing province:" "$log_file" 2>/dev/null | tail -1 | sed 's/.*Processing province: //')
+            last_province=$(grep -E "Processing province:" "$log_file" 2>/dev/null | tail -1 | sed 's/.*Processing province: //')
             log "Year $year running OK (log age: ${log_age}s) - $last_province"
         fi
     done

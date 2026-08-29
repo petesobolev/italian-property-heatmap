@@ -1530,11 +1530,28 @@ def run_ingestion(
                 logger.error(f"    TIMEOUT: {comune.name} exceeded {municipality_timeout}s limit after {elapsed:.0f}s")
                 logger.error(f"    Last operation: {progress_tracker.get_current_operation()}")
                 # Thread will be abandoned (daemon thread will be killed when main thread exits)
-                # But we need to create fresh connections since the timed-out thread may have left them in bad state
+                # Force reconnect with timeout to prevent infinite hangs
+                logger.info(f"    Reconnecting to database after timeout...")
+                reconnect_start = time.time()
+                reconnect_timeout = 30  # Max 30 seconds to reconnect
                 try:
+                    # Close existing connections first
+                    try:
+                        if db_loader.conn:
+                            db_loader.conn.close()
+                    except Exception:
+                        pass
+                    db_loader.conn = None
+                    db_loader.cursor = None
+
+                    # Reconnect with timeout
                     db_loader._connect()
-                except Exception:
-                    pass
+                    logger.info(f"    Reconnected in {time.time() - reconnect_start:.1f}s")
+                except Exception as e:
+                    logger.warning(f"    Reconnect failed after {time.time() - reconnect_start:.1f}s: {e}")
+                    # Continue anyway - next municipality will retry connection
+
+                logger.info(f"    Continuing to next municipality...")
                 return 0, 0, False
 
             # Thread completed - check results
