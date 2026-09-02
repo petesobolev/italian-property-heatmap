@@ -49,9 +49,24 @@ is_year_complete() {
     return 1
 }
 
+backup_log() {
+    local log_file="$1"
+    if [ -f "$log_file" ] && [ -s "$log_file" ]; then
+        local backup_name="${log_file%.log}_$(date '+%Y%m%d_%H%M%S').log"
+        cp "$log_file" "$backup_name"
+        log "Backed up log to $backup_name"
+        # Keep only last 5 backups per year
+        local base_name="${log_file%.log}"
+        ls -t ${base_name}_*.log 2>/dev/null | tail -n +6 | xargs rm -f 2>/dev/null
+    fi
+}
+
 start_year() {
     local year="$1"
     local log_file="omi_${year}_full.log"
+
+    # Backup existing log before overwriting
+    backup_log "$log_file"
 
     log "Starting $year ingestion..."
     nohup python3 load_omi_values.py \
