@@ -737,18 +737,27 @@ class DatabaseLoader:
 
     def municipality_has_zone_data(self, municipality_id: str, period_id: str) -> bool:
         """Check if a municipality already has zone-level property value data for a given period."""
-        self._ensure_connection()
-        # Check zone values table - join with zones to find by municipality
-        self.cursor.execute("""
-            SELECT EXISTS(
-                SELECT 1 FROM mart.omi_zone_values_semester zv
-                JOIN core.omi_zones z ON z.omi_zone_id = zv.omi_zone_id
-                WHERE z.municipality_id = %s AND zv.period_id = %s
-                LIMIT 1
-            )
-        """, (municipality_id, period_id))
-        result = self.cursor.fetchone()
-        return result['exists'] if result else False
+        for attempt in range(2):
+            try:
+                self._ensure_connection()
+                # Check zone values table - join with zones to find by municipality
+                self.cursor.execute("""
+                    SELECT EXISTS(
+                        SELECT 1 FROM mart.omi_zone_values_semester zv
+                        JOIN core.omi_zones z ON z.omi_zone_id = zv.omi_zone_id
+                        WHERE z.municipality_id = %s AND zv.period_id = %s
+                        LIMIT 1
+                    )
+                """, (municipality_id, period_id))
+                result = self.cursor.fetchone()
+                return result['exists'] if result else False
+            except (psycopg2.InterfaceError, psycopg2.OperationalError, psycopg2.ProgrammingError) as e:
+                if attempt == 0:
+                    logger.warning(f"Zone data check failed, reconnecting: {e}")
+                    self._connect()
+                else:
+                    raise
+        return False
 
     def get_province_completion_status(self, province_istat_prefix: str, period_id: str) -> tuple[int, int]:
         """
@@ -815,33 +824,42 @@ class DatabaseLoader:
         Returns:
             True if province has zone data for all periods
         """
-        self._ensure_connection()
-        for period_id in period_ids:
-            # Count total municipalities in province
-            self.cursor.execute("""
-                SELECT COUNT(*) as total FROM core.municipalities
-                WHERE municipality_id LIKE %s
-            """, (f"{province_istat_prefix}%",))
-            total_result = self.cursor.fetchone()
-            total = total_result['total'] if total_result else 0
+        for attempt in range(2):
+            try:
+                self._ensure_connection()
+                for period_id in period_ids:
+                    # Count total municipalities in province
+                    self.cursor.execute("""
+                        SELECT COUNT(*) as total FROM core.municipalities
+                        WHERE municipality_id LIKE %s
+                    """, (f"{province_istat_prefix}%",))
+                    total_result = self.cursor.fetchone()
+                    total = total_result['total'] if total_result else 0
 
-            if total == 0:
-                return False
+                    if total == 0:
+                        return False
 
-            # Count municipalities with zone data for this period
-            self.cursor.execute("""
-                SELECT COUNT(DISTINCT z.municipality_id) as with_data
-                FROM mart.omi_zone_values_semester zv
-                JOIN core.omi_zones z ON z.omi_zone_id = zv.omi_zone_id
-                WHERE z.municipality_id LIKE %s AND zv.period_id = %s
-            """, (f"{province_istat_prefix}%", period_id))
-            data_result = self.cursor.fetchone()
-            with_data = data_result['with_data'] if data_result else 0
+                    # Count municipalities with zone data for this period
+                    self.cursor.execute("""
+                        SELECT COUNT(DISTINCT z.municipality_id) as with_data
+                        FROM mart.omi_zone_values_semester zv
+                        JOIN core.omi_zones z ON z.omi_zone_id = zv.omi_zone_id
+                        WHERE z.municipality_id LIKE %s AND zv.period_id = %s
+                    """, (f"{province_istat_prefix}%", period_id))
+                    data_result = self.cursor.fetchone()
+                    with_data = data_result['with_data'] if data_result else 0
 
-            completion_rate = with_data / total
-            if completion_rate < threshold:
-                return False
-        return True
+                    completion_rate = with_data / total
+                    if completion_rate < threshold:
+                        return False
+                return True
+            except (psycopg2.InterfaceError, psycopg2.OperationalError, psycopg2.ProgrammingError) as e:
+                if attempt == 0:
+                    logger.warning(f"Province zone check failed, reconnecting: {e}")
+                    self._connect()
+                else:
+                    raise
+        return False
 
     def _normalize_name(self, name: str) -> str:
         """Normalize municipality name for matching - handle special characters."""
