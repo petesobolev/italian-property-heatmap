@@ -735,6 +735,21 @@ class DatabaseLoader:
         result = self.cursor.fetchone()
         return result['exists'] if result else False
 
+    def municipality_has_zone_data(self, municipality_id: str, period_id: str) -> bool:
+        """Check if a municipality already has zone-level property value data for a given period."""
+        self._ensure_connection()
+        # Check zone values table - join with zones to find by municipality
+        self.cursor.execute("""
+            SELECT EXISTS(
+                SELECT 1 FROM mart.omi_zone_values_semester zv
+                JOIN core.omi_zones z ON z.omi_zone_id = zv.omi_zone_id
+                WHERE z.municipality_id = %s AND zv.period_id = %s
+                LIMIT 1
+            )
+        """, (municipality_id, period_id))
+        result = self.cursor.fetchone()
+        return result['exists'] if result else False
+
     def get_province_completion_status(self, province_istat_prefix: str, period_id: str) -> tuple[int, int]:
         """
         Check how many municipalities in a province have data for a period.
@@ -783,6 +798,46 @@ class DatabaseLoader:
             with_data, total = self.get_province_completion_status(province_istat_prefix, period_id)
             if total == 0:
                 return False
+            completion_rate = with_data / total
+            if completion_rate < threshold:
+                return False
+        return True
+
+    def is_province_zone_complete(self, province_istat_prefix: str, period_ids: list[str], threshold: float = 0.95) -> bool:
+        """
+        Check if a province has zone-level data for most municipalities.
+
+        Args:
+            province_istat_prefix: 3-digit province ISTAT prefix
+            period_ids: List of periods to check (all must meet threshold)
+            threshold: Completion threshold (default 95%)
+
+        Returns:
+            True if province has zone data for all periods
+        """
+        self._ensure_connection()
+        for period_id in period_ids:
+            # Count total municipalities in province
+            self.cursor.execute("""
+                SELECT COUNT(*) as total FROM core.municipalities
+                WHERE municipality_id LIKE %s
+            """, (f"{province_istat_prefix}%",))
+            total_result = self.cursor.fetchone()
+            total = total_result['total'] if total_result else 0
+
+            if total == 0:
+                return False
+
+            # Count municipalities with zone data for this period
+            self.cursor.execute("""
+                SELECT COUNT(DISTINCT z.municipality_id) as with_data
+                FROM mart.omi_zone_values_semester zv
+                JOIN core.omi_zones z ON z.omi_zone_id = zv.omi_zone_id
+                WHERE z.municipality_id LIKE %s AND zv.period_id = %s
+            """, (f"{province_istat_prefix}%", period_id))
+            data_result = self.cursor.fetchone()
+            with_data = data_result['with_data'] if data_result else 0
+
             completion_rate = with_data / total
             if completion_rate < threshold:
                 return False
@@ -1680,8 +1735,7 @@ def run_ingestion(
                     comuni = comuni[:5]
 
                 # Check if province is already complete (skip entire province if so)
-                # Skip unless force_zone_reload is set (which forces re-ingestion for zone data)
-                if skip_loaded and not skip_values and comuni and not force_zone_reload:
+                if skip_loaded and not skip_values and comuni:
                     # Get the ISTAT prefix from the first comune we can resolve
                     province_istat_prefix = None
                     for sample_comune in comuni[:5]:  # Check first few comuni
@@ -1692,9 +1746,16 @@ def run_ingestion(
 
                     if province_istat_prefix:
                         period_ids = [f"{sem[:4]}H{sem[4]}" for sem in semesters]
-                        if db_loader.is_province_complete(province_istat_prefix, period_ids):
-                            logger.info(f"  Province {province.name} is already complete (>=95%), skipping entirely")
-                            continue
+                        if force_zone_reload:
+                            # Check for zone-level data completion
+                            if db_loader.is_province_zone_complete(province_istat_prefix, period_ids):
+                                logger.info(f"  Province {province.name} already has zone data (>=95%), skipping entirely")
+                                continue
+                        else:
+                            # Check for municipality-level data completion
+                            if db_loader.is_province_complete(province_istat_prefix, period_ids):
+                                logger.info(f"  Province {province.name} is already complete (>=95%), skipping entirely")
+                                continue
 
                 for com_idx, comune in enumerate(comuni):
                     # Look up ISTAT code from cadastral code
@@ -1706,12 +1767,18 @@ def run_ingestion(
                     comune.istat_code = istat_code
 
                     # Check if municipality already has data for requested semesters
-                    # Skip unless force_zone_reload is set (which forces re-ingestion for zone data)
-                    if skip_loaded and not skip_values and not force_zone_reload:
+                    if skip_loaded and not skip_values:
                         period_id = f"{semesters[0][:4]}H{semesters[0][4]}"
-                        if db_loader.municipality_has_data(istat_code, period_id):
-                            logger.debug(f"  [{com_idx + 1}/{len(comuni)}] {comune.name} - skipping (already has data)")
-                            continue
+                        if force_zone_reload:
+                            # When force_zone_reload is set, check for zone-level data instead
+                            if db_loader.municipality_has_zone_data(istat_code, period_id):
+                                logger.debug(f"  [{com_idx + 1}/{len(comuni)}] {comune.name} - skipping (already has zone data)")
+                                continue
+                        else:
+                            # Normal mode: check for municipality-level data
+                            if db_loader.municipality_has_data(istat_code, period_id):
+                                logger.debug(f"  [{com_idx + 1}/{len(comuni)}] {comune.name} - skipping (already has data)")
+                                continue
 
                     logger.info(f"  [{com_idx + 1}/{len(comuni)}] {comune.name} ({comune.codcom} -> {istat_code})")
 
