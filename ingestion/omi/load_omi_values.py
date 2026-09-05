@@ -895,7 +895,7 @@ class DatabaseLoader:
         for attempt in range(3):
             try:
                 return self._find_istat_code_inner(codcom, comune_name, province_code)
-            except (psycopg2.ProgrammingError, psycopg2.InterfaceError, psycopg2.OperationalError) as e:
+            except (psycopg2.ProgrammingError, psycopg2.InterfaceError, psycopg2.OperationalError, KeyError) as e:
                 logger.warning(f"DB error in find_istat_code (attempt {attempt + 1}/3): {e}")
                 if attempt < 2:
                     time.sleep(1)
