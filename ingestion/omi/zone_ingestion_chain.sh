@@ -41,9 +41,9 @@ is_year_complete() {
     local year="$1"
     local log_file="omi_${year}_full.log"
 
-    # Check if log file contains completion message
+    # Check if log file contains completion message (case-insensitive)
     if [ -f "$log_file" ]; then
-        grep -q "Ingestion complete\|Processing complete\|All .* provinces processed" "$log_file" 2>/dev/null
+        grep -qi "Ingestion complete\|Processing complete\|All .* provinces processed" "$log_file" 2>/dev/null
         return $?
     fi
     return 1
