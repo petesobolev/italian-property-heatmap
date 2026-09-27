@@ -87,7 +87,7 @@ const COLOR_SCALES: Record<MetricType, { stops: number[][]; noData: string; fixe
       [215, 48, 39],    // Red (high variance - uncertain)
     ],
     noData: "#2a2d35",
-    fixedRange: { min: 0, max: 100 },
+    // Dynamic range - uses viewport data for full color spectrum
   },
   forecast_appreciation_pct: {
     stops: [
@@ -168,11 +168,11 @@ const COLOR_SCALES: Record<MetricType, { stops: number[][]; noData: string; fixe
   },
 };
 
-// Dark map tiles for premium feel
-const DARK_TILES = "https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}{r}.png";
-const DARK_LABELS = "https://{s}.basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}{r}.png";
+// Dark map tiles - Esri Canvas Dark Gray (free, no API key required)
+const DARK_TILES = "https://services.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}";
+const DARK_LABELS = "https://services.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Reference/MapServer/tile/{z}/{y}/{x}";
 const DARK_ATTRIBUTION =
-  '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>';
+  '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://www.esri.com/">Esri</a>';
 
 interface MapControllerProps {
   center?: [number, number];
@@ -745,30 +745,39 @@ export function MapInner() {
 
   // Calculate value domain from visible municipalities only
   const valueDomain = useMemo(() => {
+    // Metrics where 0 means "no data" (e.g., earthquake zones with no market)
+    const zeroMeansNoData = ["value_mid_eur_sqm", "rent_mid_eur_sqm_month", "gross_yield_pct"];
+    const excludeZero = zeroMeansNoData.includes(filters.metric);
+
     let vals: number[];
 
     if (visibleMunicipalityIds) {
       // Filter to only visible municipalities
       vals = Array.from(visibleMunicipalityIds)
         .map((id) => valuesByMunicipality[id])
-        .filter((v): v is number => typeof v === "number" && Number.isFinite(v))
+        .filter((v): v is number => typeof v === "number" && Number.isFinite(v) && (!excludeZero || v !== 0))
         .sort((a, b) => a - b);
     } else {
       // Fall back to all values
       vals = Object.values(valuesByMunicipality)
-        .filter((v): v is number => typeof v === "number" && Number.isFinite(v))
+        .filter((v): v is number => typeof v === "number" && Number.isFinite(v) && (!excludeZero || v !== 0))
         .sort((a, b) => a - b);
     }
 
     if (vals.length === 0) return { min: 0, max: 0 };
     return { min: vals[0], max: vals[vals.length - 1] };
-  }, [valuesByMunicipality, visibleMunicipalityIds]);
+  }, [valuesByMunicipality, visibleMunicipalityIds, filters.metric]);
 
   // Color function
   const colorFor = useCallback(
     (v: number | null | undefined) => {
       const scale = COLOR_SCALES[filters.metric];
       if (typeof v !== "number" || !Number.isFinite(v)) return scale.noData;
+
+      // Treat 0 as "no data" for metrics where 0 is not a valid value
+      // (e.g., earthquake-devastated areas where OMI reports €0/sqm)
+      const zeroMeansNoData = ["value_mid_eur_sqm", "rent_mid_eur_sqm_month", "gross_yield_pct"];
+      if (v === 0 && zeroMeansNoData.includes(filters.metric)) return scale.noData;
 
       // Use fixed range if defined, otherwise fall back to data-driven range
       const min = scale.fixedRange?.min ?? valueDomain.min;
@@ -1142,8 +1151,7 @@ export function MapInner() {
       layer.bindTooltip(label, {
         sticky: false,
         permanent: false,
-        direction: "top",
-        offset: [0, -10],
+        direction: "auto",
         className: "map-tooltip",
       });
 
