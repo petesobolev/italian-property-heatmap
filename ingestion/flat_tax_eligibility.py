@@ -7,12 +7,12 @@ for foreign retirees based on two eligibility paths:
 
 1. SOUTHERN ITALY (Mezzogiorno) - Law 145/2018, Art. 1, comma 273
    - Regions: Abruzzo, Molise, Campania, Puglia, Basilicata, Calabria, Sicilia, Sardegna
-   - Population: < 20,000 inhabitants
+   - Population: < 30,000 inhabitants (raised from 20,000 by Law 34/2026, effective April 7, 2026)
 
 2. CENTRAL ITALY EARTHQUAKE ZONE (Sisma 2016) - Decree 189/2016
    - Specific municipalities in: Abruzzo, Lazio, Marche, Umbria
    - Affected by 2016 earthquakes (August 24 and October 26-30)
-   - Population: < 20,000 inhabitants
+   - NO population limit for earthquake-affected municipalities (confirmed by Law 34/2026)
 
 Sources:
 - https://sisma2016.gov.it/flat-tax-7-ita/
@@ -99,7 +99,8 @@ SISMA_2016_ALL = (
     SISMA_2016_MUNICIPALITIES_UMBRIA
 )
 
-POPULATION_THRESHOLD = 20000
+# Population threshold for Southern Italy (raised from 20,000 to 30,000 by Law 34/2026)
+SOUTHERN_POPULATION_THRESHOLD = 30000
 
 
 def normalize_municipality_name(name: str) -> str:
@@ -172,13 +173,17 @@ def get_region_from_istat_code(istat_code: str) -> str:
 
 def is_eligible_southern_italy(region: str, population: int) -> bool:
     """Check if municipality qualifies via Southern Italy path."""
-    return region in SOUTHERN_REGIONS and population < POPULATION_THRESHOLD
+    return region in SOUTHERN_REGIONS and population < SOUTHERN_POPULATION_THRESHOLD
 
 
-def is_eligible_sisma_2016(name: str, population: int) -> bool:
-    """Check if municipality qualifies via Sisma 2016 earthquake zone path."""
+def is_eligible_sisma_2016(name: str) -> bool:
+    """Check if municipality qualifies via Sisma 2016 earthquake zone path.
+
+    Note: There is NO population limit for earthquake-affected municipalities
+    per Law 34/2026.
+    """
     normalized = normalize_municipality_name(name)
-    return normalized in SISMA_2016_ALL and population < POPULATION_THRESHOLD
+    return normalized in SISMA_2016_ALL
 
 
 def check_eligibility(
@@ -197,7 +202,7 @@ def check_eligibility(
 
     # Check both paths
     southern_eligible = is_eligible_southern_italy(region, population)
-    sisma_eligible = is_eligible_sisma_2016(municipality_name, population)
+    sisma_eligible = is_eligible_sisma_2016(municipality_name)
 
     if southern_eligible and sisma_eligible:
         return True, "southern_italy+sisma_2016"
@@ -206,8 +211,9 @@ def check_eligibility(
     elif sisma_eligible:
         return True, "sisma_2016"
     else:
-        if population >= POPULATION_THRESHOLD:
-            return False, f"population_exceeds_{POPULATION_THRESHOLD}"
+        # Not eligible - determine reason
+        if region in SOUTHERN_REGIONS and population >= SOUTHERN_POPULATION_THRESHOLD:
+            return False, f"southern_population_exceeds_{SOUTHERN_POPULATION_THRESHOLD}"
         elif region not in SOUTHERN_REGIONS and normalized_name not in SISMA_2016_ALL:
             return False, "not_in_eligible_region_or_zone"
         else:
@@ -309,18 +315,111 @@ def generate_eligible_municipalities_from_db():
     return eligible
 
 
+def update_database_eligibility():
+    """Update the mart.flat_tax_eligibility table in the database."""
+    try:
+        import psycopg2
+    except ImportError:
+        logger.error("psycopg2 not installed. Run: pip install psycopg2-binary")
+        return
+
+    # Load environment
+    env_paths = [
+        Path(__file__).parent.parent / "frontend" / ".env.local",
+        Path(__file__).parent / ".env",
+    ]
+    for env_path in env_paths:
+        if env_path.exists():
+            load_dotenv(env_path)
+            break
+
+    # Connect to database
+    db_host = os.getenv('DB_HOST')
+    db_port = os.getenv('DB_PORT', '6543')
+    db_name = os.getenv('DB_NAME', 'postgres')
+    db_user = os.getenv('DB_USER')
+    db_password = os.getenv('DB_PASSWORD')
+
+    conn = psycopg2.connect(
+        host=db_host, port=db_port, dbname=db_name,
+        user=db_user, password=db_password
+    )
+    conn.autocommit = False
+    cursor = conn.cursor()
+
+    # Get all municipalities with population data
+    cursor.execute("""
+        SELECT
+            m.municipality_id as istat_code,
+            m.municipality_name as name,
+            COALESCE(d.total_population, 0) as population
+        FROM core.municipalities m
+        LEFT JOIN mart.municipality_demographics_year d
+            ON m.municipality_id = d.municipality_id
+            AND d.reference_year = (
+                SELECT MAX(reference_year)
+                FROM mart.municipality_demographics_year
+            )
+        ORDER BY m.municipality_name
+    """)
+
+    eligible = []
+    for istat_code, name, population in cursor.fetchall():
+        is_eligible, reason = check_eligibility(name, istat_code, population or 0)
+        if is_eligible:
+            eligible.append((istat_code, reason))
+
+    logger.info(f"Found {len(eligible)} eligible municipalities")
+
+    # Clear existing data and insert new
+    cursor.execute("DELETE FROM mart.flat_tax_eligibility")
+    logger.info("Cleared existing eligibility data")
+
+    # Insert new data
+    from psycopg2.extras import execute_values
+    execute_values(
+        cursor,
+        """
+        INSERT INTO mart.flat_tax_eligibility (municipality_id, eligibility_reason, is_eligible, updated_at)
+        VALUES %s
+        """,
+        [(m_id, reason, True, 'now()') for m_id, reason in eligible],
+        template="(%s, %s, %s, %s)"
+    )
+
+    conn.commit()
+    logger.info(f"Inserted {len(eligible)} eligible municipalities")
+
+    # Count by reason
+    by_reason = {}
+    for _, reason in eligible:
+        by_reason[reason] = by_reason.get(reason, 0) + 1
+
+    logger.info("Breakdown by eligibility path:")
+    for reason, count in sorted(by_reason.items()):
+        logger.info(f"  {reason}: {count}")
+
+    cursor.close()
+    conn.close()
+    logger.info("Database update complete")
+
+
 if __name__ == '__main__':
     import argparse
 
     parser = argparse.ArgumentParser(description='7% Flat Tax Eligibility Calculator')
     parser.add_argument('--generate', action='store_true',
-                        help='Generate eligible municipalities list from database')
+                        help='Generate eligible municipalities list to CSV')
+    parser.add_argument('--update-db', action='store_true',
+                        help='Update the database with current eligibility rules')
     parser.add_argument('--check', type=str, nargs=3, metavar=('NAME', 'ISTAT', 'POP'),
                         help='Check single municipality: NAME ISTAT_CODE POPULATION')
     args = parser.parse_args()
 
     if args.generate:
         generate_eligible_municipalities_from_db()
+    elif args.update_db:
+        update_database_eligibility()
     elif args.check:
         name, istat, pop = args.check
         is_elig, reason = check_eligibility(name, istat, int(pop))
