@@ -850,20 +850,29 @@ export function MapInner() {
         const eligibilityReason = id ? flatTaxEligibility[id] : undefined;
 
         if (isEligible && eligibilityReason) {
-          if (eligibilityReason === "sisma_2016") {
-            // Sisma 2016 earthquake zone only - Yellow
+          // Check for combined earthquake zones first (sisma_2009+2016)
+          if (eligibilityReason.includes("sisma_2009") && eligibilityReason.includes("sisma_2016")) {
+            // Both Sisma 2009 AND 2016 - Red/Crimson
+            return {
+              color: "#dc2626",
+              weight: 2,
+              fillColor: "rgba(220, 38, 38, 0.5)",
+              fillOpacity: 0.7,
+            };
+          } else if (eligibilityReason.includes("sisma_2009")) {
+            // Sisma 2009 only - Purple/Violet
+            return {
+              color: "#a855f7",
+              weight: 2,
+              fillColor: "rgba(168, 85, 247, 0.5)",
+              fillOpacity: 0.7,
+            };
+          } else if (eligibilityReason.includes("sisma_2016")) {
+            // Sisma 2016 only - Yellow
             return {
               color: "#eab308",
               weight: 2,
               fillColor: "rgba(202, 138, 4, 0.5)",
-              fillOpacity: 0.7,
-            };
-          } else if (eligibilityReason === "southern_italy+sisma_2016") {
-            // Both Southern Italy AND Sisma 2016 - Orange (blend)
-            return {
-              color: "#f97316",
-              weight: 2,
-              fillColor: "rgba(249, 115, 22, 0.5)",
               fillOpacity: 0.7,
             };
           } else {

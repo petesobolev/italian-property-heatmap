@@ -44,7 +44,7 @@ const METRIC_CONFIG: Record<
     unit: "%",
     format: (v) => `${v.toFixed(0)}%`,
     colors: ["#1a9850", "#91cf60", "#ffffbf", "#fc8d59", "#d73027"],
-    fixedRange: { min: 0, max: 100 },
+    // Dynamic range - uses viewport data for full color spectrum
   },
   forecast_appreciation_pct: {
     label: "Appreciation Forecast",
@@ -125,16 +125,23 @@ export function MapLegend({ metric, min, max, isLoading, showFlatTaxEligible }: 
           <div className="flat-tax-legend__item">
             <div
               className="flat-tax-legend__swatch"
-              style={{ backgroundColor: "rgba(202, 138, 4, 0.6)", borderColor: "#eab308" }}
+              style={{ backgroundColor: "rgba(168, 85, 247, 0.6)", borderColor: "#a855f7" }}
             />
-            <span className="flat-tax-legend__label">Sisma 2016 (Earthquake Zone)</span>
+            <span className="flat-tax-legend__label">Sisma 2009 (L&apos;Aquila)</span>
           </div>
           <div className="flat-tax-legend__item">
             <div
               className="flat-tax-legend__swatch"
-              style={{ backgroundColor: "rgba(249, 115, 22, 0.6)", borderColor: "#f97316" }}
+              style={{ backgroundColor: "rgba(202, 138, 4, 0.6)", borderColor: "#eab308" }}
             />
-            <span className="flat-tax-legend__label">Both (Southern + Sisma)</span>
+            <span className="flat-tax-legend__label">Sisma 2016 (Central Italy)</span>
+          </div>
+          <div className="flat-tax-legend__item">
+            <div
+              className="flat-tax-legend__swatch"
+              style={{ backgroundColor: "rgba(220, 38, 38, 0.6)", borderColor: "#dc2626" }}
+            />
+            <span className="flat-tax-legend__label">Sisma 2009 + 2016</span>
           </div>
           <div className="flat-tax-legend__item">
             <div
