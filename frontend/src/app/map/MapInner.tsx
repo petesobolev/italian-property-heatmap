@@ -851,7 +851,8 @@ export function MapInner() {
 
         if (isEligible && eligibilityReason) {
           // Check for combined earthquake zones first (sisma_2009+2016)
-          if (eligibilityReason.includes("sisma_2009") && eligibilityReason.includes("sisma_2016")) {
+          // Note: format is "sisma_2009+2016" not "sisma_2009+sisma_2016"
+          if (eligibilityReason.includes("sisma_2009") && (eligibilityReason.includes("+2016") || eligibilityReason.includes("sisma_2016"))) {
             // Both Sisma 2009 AND 2016 - Red/Crimson
             return {
               color: "#dc2626",
