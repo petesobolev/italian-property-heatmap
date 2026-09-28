@@ -3,20 +3,31 @@
 7% Flat Tax Regime Eligibility Calculator
 
 Determines which Italian municipalities qualify for the 7% flat tax regime
-for foreign retirees based on two eligibility paths:
+for foreign retirees. All qualifying municipalities must have population < 30,000
+(raised from 20,000 by Law 34/2026, Art. 26, comma 1, effective April 7, 2026).
+
+The "comunque" clause in TUIR art. 24-ter, comma 1 means the 30,000 limit
+applies universally to all three groups:
 
 1. SOUTHERN ITALY (Mezzogiorno) - Law 145/2018, Art. 1, comma 273
    - Regions: Abruzzo, Molise, Campania, Puglia, Basilicata, Calabria, Sicilia, Sardegna
-   - Population: < 30,000 inhabitants (raised from 20,000 by Law 34/2026, effective April 7, 2026)
 
-2. CENTRAL ITALY EARTHQUAKE ZONE (Sisma 2016) - Decree 189/2016
-   - Specific municipalities in: Abruzzo, Lazio, Marche, Umbria
+2. SISMA 2009 (L'Aquila) - D.L. n. 4/2022 (Decreto Sostegni Ter), art. 6-ter
+   - 57 municipalities in provinces of L'Aquila, Teramo, Pescara
+   - Affected by April 6, 2009 earthquake
+
+3. SISMA 2016 (Central Italy) - Decree 189/2016
+   - 140+ municipalities in: Abruzzo, Lazio, Marche, Umbria
    - Affected by 2016 earthquakes (August 24 and October 26-30)
-   - NO population limit for earthquake-affected municipalities (confirmed by Law 34/2026)
+
+Note: The Sisma 2016 Commissioner's website (sisma2016.gov.it) still shows
+the old 20,000 limit from DL 4/2022, but this was superseded by Law 34/2026.
 
 Sources:
+- TUIR art. 24-ter, comma 1 (Brocardi, updated July 2026)
 - https://sisma2016.gov.it/flat-tax-7-ita/
 - https://osservatoriosisma.it/la-liste-dei-140-comuni-inseriti-nel-cratere-del-terremoto/
+- https://sisma2009.governo.it/it/
 """
 
 import os
@@ -91,7 +102,7 @@ SISMA_2016_MUNICIPALITIES_UMBRIA = {
     'sant\'anatolia di narco', 'scheggino', 'sellano', 'spoleto', 'vallo di nera'
 }
 
-# Combined set for quick lookup
+# Combined set for quick lookup - Sisma 2016
 SISMA_2016_ALL = (
     SISMA_2016_MUNICIPALITIES_ABRUZZO |
     SISMA_2016_MUNICIPALITIES_LAZIO |
@@ -99,8 +110,46 @@ SISMA_2016_ALL = (
     SISMA_2016_MUNICIPALITIES_UMBRIA
 )
 
+# Sisma 2009 (L'Aquila earthquake) affected municipalities
+# Source: Decree of the Commissario Delegato n. 3 of April 16, 2009 (integrated by Decree n. 11 of July 17, 2009)
+# Extended to flat tax regime by D.L. n. 4/2022 (Decreto Sostegni Ter), art. 6-ter
+# NO population limit for earthquake-affected municipalities
+
+# Province of L'Aquila
+SISMA_2009_MUNICIPALITIES_LAQUILA = {
+    'acciano', 'barete', 'barisciano', 'campotosto', 'capestrano', 'caporciano',
+    'carapelle calvisio', 'castel del monte', 'castel di ieri', 'castelvecchio calvisio',
+    'castelvecchio subequo', 'cocullo', 'collarmele', 'fagnano alto', 'fossa',
+    'gagliano aterno', 'goriano sicoli', 'l\'aquila', 'lucoli', 'navelli', 'ocre',
+    'ofena', 'ovindoli', 'pizzoli', 'poggio picenze', 'prata d\'ansidonia',
+    'rocca di cambio', 'rocca di mezzo', 'san demetrio ne\' vestini', 'san pio delle camere',
+    'sant\'eusanio forconese', 'santo stefano di sessanio', 'scoppito',
+    'tione degli abruzzi', 'tornimparte', 'villa sant\'angelo', 'villa santa lucia degli abruzzi'
+}
+
+# Province of Teramo (some overlap with Sisma 2016)
+SISMA_2009_MUNICIPALITIES_TERAMO = {
+    'arsita', 'castelli', 'montorio al vomano', 'pietracamela', 'tossicia'
+}
+
+# Province of Pescara
+SISMA_2009_MUNICIPALITIES_PESCARA = {
+    'brittoli', 'bussi sul tirino', 'civitella casanova', 'cugnoli',
+    'montebello di bertona', 'popoli', 'torre de\' passeri'
+}
+
+# Combined set for quick lookup - Sisma 2009
+SISMA_2009_ALL = (
+    SISMA_2009_MUNICIPALITIES_LAQUILA |
+    SISMA_2009_MUNICIPALITIES_TERAMO |
+    SISMA_2009_MUNICIPALITIES_PESCARA
+)
+
+# All earthquake-affected municipalities (both 2009 and 2016)
+SISMA_ALL = SISMA_2016_ALL | SISMA_2009_ALL
+
 # Population threshold for Southern Italy (raised from 20,000 to 30,000 by Law 34/2026)
-SOUTHERN_POPULATION_THRESHOLD = 30000
+POPULATION_THRESHOLD = 30000
 
 
 def normalize_municipality_name(name: str) -> str:
@@ -173,17 +222,37 @@ def get_region_from_istat_code(istat_code: str) -> str:
 
 def is_eligible_southern_italy(region: str, population: int) -> bool:
     """Check if municipality qualifies via Southern Italy path."""
-    return region in SOUTHERN_REGIONS and population < SOUTHERN_POPULATION_THRESHOLD
+    return region in SOUTHERN_REGIONS and population < POPULATION_THRESHOLD
 
 
-def is_eligible_sisma_2016(name: str) -> bool:
-    """Check if municipality qualifies via Sisma 2016 earthquake zone path.
+def is_eligible_earthquake_zone(name: str, population: int) -> tuple[bool, str]:
+    """Check if municipality qualifies via earthquake zone path (Sisma 2009 or 2016).
 
-    Note: There is NO population limit for earthquake-affected municipalities
-    per Law 34/2026.
+    Per Law 34/2026, the 30,000 population limit applies to earthquake zones
+    as well (the "comunque" clause in TUIR art. 24-ter, comma 1).
+
+    Returns:
+        Tuple of (is_eligible, earthquake_type) where earthquake_type is
+        'sisma_2009', 'sisma_2016', or 'sisma_2009+2016' if affected by both.
+        Returns (False, '') if population >= 30,000 or not in earthquake zone.
     """
+    # Population limit applies to all categories per Law 34/2026
+    if population >= POPULATION_THRESHOLD:
+        return False, ''
+
     normalized = normalize_municipality_name(name)
-    return normalized in SISMA_2016_ALL
+
+    in_2009 = normalized in SISMA_2009_ALL
+    in_2016 = normalized in SISMA_2016_ALL
+
+    if in_2009 and in_2016:
+        return True, 'sisma_2009+2016'
+    elif in_2009:
+        return True, 'sisma_2009'
+    elif in_2016:
+        return True, 'sisma_2016'
+    else:
+        return False, ''
 
 
 def check_eligibility(
@@ -200,21 +269,22 @@ def check_eligibility(
     region = get_region_from_istat_code(istat_code)
     normalized_name = normalize_municipality_name(municipality_name)
 
-    # Check both paths
+    # Check both paths (both have 30,000 population limit per Law 34/2026)
     southern_eligible = is_eligible_southern_italy(region, population)
-    sisma_eligible = is_eligible_sisma_2016(municipality_name)
+    earthquake_eligible, earthquake_type = is_eligible_earthquake_zone(municipality_name, population)
 
-    if southern_eligible and sisma_eligible:
-        return True, "southern_italy+sisma_2016"
+    if southern_eligible and earthquake_eligible:
+        return True, f"southern_italy+{earthquake_type}"
     elif southern_eligible:
         return True, "southern_italy"
-    elif sisma_eligible:
-        return True, "sisma_2016"
+    elif earthquake_eligible:
+        return True, earthquake_type
     else:
         # Not eligible - determine reason
-        if region in SOUTHERN_REGIONS and population >= SOUTHERN_POPULATION_THRESHOLD:
-            return False, f"southern_population_exceeds_{SOUTHERN_POPULATION_THRESHOLD}"
-        elif region not in SOUTHERN_REGIONS and normalized_name not in SISMA_2016_ALL:
+        in_eligible_zone = region in SOUTHERN_REGIONS or normalized_name in SISMA_ALL
+        if in_eligible_zone and population >= POPULATION_THRESHOLD:
+            return False, f"population_exceeds_{POPULATION_THRESHOLD}"
+        elif not in_eligible_zone:
             return False, "not_in_eligible_region_or_zone"
         else:
             return False, "unknown"
