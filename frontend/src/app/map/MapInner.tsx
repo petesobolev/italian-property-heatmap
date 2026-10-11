@@ -164,7 +164,7 @@ const COLOR_SCALES: Record<MetricType, { stops: number[][]; noData: string; fixe
       [26, 152, 80],    // Deep green (large growth)
     ],
     noData: "#2a2d35",
-    fixedRange: { min: -15, max: 15 },
+    // No fixedRange - use dynamic range based on viewport data for maximum color differentiation
   },
 };
 
