@@ -22,7 +22,6 @@ export interface FiltersState {
   metric: MetricType;
   region: string | null;
   province: string | null;
-  confidenceThreshold: number;
   propertySegment: "residential" | "commercial" | "industrial";
   showFlatTaxEligible: boolean;
   semestersToAverage: number;
@@ -187,13 +186,6 @@ export function FiltersSidebar({
   const handleProvinceChange = useCallback(
     (province: string | null) => {
       onFiltersChange({ ...filters, province });
-    },
-    [filters, onFiltersChange]
-  );
-
-  const handleConfidenceChange = useCallback(
-    (confidenceThreshold: number) => {
-      onFiltersChange({ ...filters, confidenceThreshold });
     },
     [filters, onFiltersChange]
   );
@@ -415,35 +407,6 @@ export function FiltersSidebar({
           </div>
         </div>
 
-        {/* Confidence Slider */}
-        <div className="filters-section">
-          <label className="filters-section__label">
-            <span className="filters-section__label-text">Minimum Confidence</span>
-            <span className="filters-section__label-value">{filters.confidenceThreshold}%</span>
-          </label>
-          <div className="slider-wrapper">
-            <input
-              type="range"
-              min="0"
-              max="100"
-              step="5"
-              value={filters.confidenceThreshold}
-              onChange={(e) => handleConfidenceChange(Number(e.target.value))}
-              className="slider-input"
-            />
-            <div className="slider-track">
-              <div
-                className="slider-fill"
-                style={{ width: `${filters.confidenceThreshold}%` }}
-              />
-            </div>
-            <div className="slider-labels">
-              <span>Low</span>
-              <span>High</span>
-            </div>
-          </div>
-        </div>
-
         {/* Semesters to Average */}
         <div className="filters-section">
           <label className="filters-section__label">
@@ -565,7 +528,6 @@ export function FiltersSidebar({
                 metric: "value_mid_eur_sqm",
                 region: null,
                 province: null,
-                confidenceThreshold: 0,
                 propertySegment: "residential",
                 showFlatTaxEligible: false,
                 semestersToAverage: 1,

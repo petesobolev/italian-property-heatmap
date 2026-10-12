@@ -466,7 +466,6 @@ export function MapInner() {
     metric: "value_mid_eur_sqm",
     region: null,
     province: null,
-    confidenceThreshold: 0,
     propertySegment: "residential",
     showFlatTaxEligible: false,
     semestersToAverage: 1,
