@@ -37,6 +37,14 @@ interface FiltersSidebarProps {
   onToggleCollapse?: () => void;
   showHiddenMetrics?: boolean;
   availablePeriodsCount?: number;
+  latestPeriod?: string | null;
+}
+
+// Format period like "2025H2" to "2H 2025"
+function formatPeriod(period: string): string {
+  const match = period.match(/^(\d{4})H([12])$/);
+  if (!match) return period;
+  return `${match[2]}H ${match[1]}`;
 }
 
 const METRICS: { value: MetricType; label: string; icon: string; description: string; hidden?: boolean }[] = [
@@ -130,6 +138,7 @@ export function FiltersSidebar({
   onToggleCollapse,
   showHiddenMetrics = false,
   availablePeriodsCount = 4,
+  latestPeriod,
 }: FiltersSidebarProps) {
   const [isAnimating, setIsAnimating] = useState(false);
   const [isInfoExpanded, setIsInfoExpanded] = useState(false);
@@ -438,6 +447,11 @@ export function FiltersSidebar({
           <p className="semester-hint">
             Averaging more months improves accuracy for low-volume areas
           </p>
+          {latestPeriod && (
+            <p className="data-latest">
+              Data through {formatPeriod(latestPeriod)}
+            </p>
+          )}
         </div>
 
         {/* Tax Regime Overlay */}
@@ -968,6 +982,13 @@ export function FiltersSidebar({
           font-size: 0.6rem;
           color: #5a6677;
           line-height: 1.4;
+        }
+
+        .data-latest {
+          margin: 6px 0 0 0;
+          font-size: 0.65rem;
+          color: #7cc4d4;
+          font-weight: 500;
         }
 
         .max-period-btn {

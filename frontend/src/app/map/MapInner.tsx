@@ -404,6 +404,7 @@ export function MapInner() {
   const [loading, setLoading] = useState(true);
   const [loadingProgress, setLoadingProgress] = useState({ percent: 0, stage: "Initializing..." });
   const [availablePeriodsCount, setAvailablePeriodsCount] = useState(4); // Default to 4, will be updated from API
+  const [latestPeriod, setLatestPeriod] = useState<string | null>(null); // Latest available data period (e.g., "2025H2")
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [selectedMunicipality, setSelectedMunicipality] = useState<MunicipalityData | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -638,6 +639,7 @@ export function MapInner() {
       const layer = (await valuesRes.json()) as {
         features?: { municipalityId: string; value: number | null }[];
         availablePeriodsCount?: number;
+        latestPeriod?: string;
       };
 
       if (cancelled) return;
@@ -648,9 +650,12 @@ export function MapInner() {
           (layer.features ?? []).map((f) => [f.municipalityId, f.value])
         )
       );
-      // Update available periods count if provided
+      // Update available periods count and latest period if provided
       if (layer.availablePeriodsCount !== undefined) {
         setAvailablePeriodsCount(layer.availablePeriodsCount);
+      }
+      if (layer.latestPeriod) {
+        setLatestPeriod(layer.latestPeriod);
       }
       setLoadingProgress({ percent: 100, stage: "Complete" });
       setLoading(false);
@@ -1215,6 +1220,7 @@ export function MapInner() {
         onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
         showHiddenMetrics={showHiddenMetrics}
         availablePeriodsCount={availablePeriodsCount}
+        latestPeriod={latestPeriod}
       />
 
       {/* Map */}
