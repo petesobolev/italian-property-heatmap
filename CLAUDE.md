@@ -1,27 +1,43 @@
 # Project Context
 
-## OMI Historical Data Ingestion
+## OMI Historical Data Ingestion (Zone-Level)
 - **2016**: Complete
 - **2017**: Complete
-- **2018**: In progress (province 2/103 - ALESSANDRIA, ~52% through)
-- **2019**: Queued after 2018
+- **2018**: Complete
+- **2019**: Complete
+- **2020**: Complete
+- **2021**: Complete
+- **2022**: Complete
+- **2023**: Complete
+- **2024**: Complete
+- **2025**: Complete
+- **2026**: In progress on iMac (~42% complete)
 
-### Smart Monitor
-The smart monitor script handles auto-recovery from stalls and crashes:
-- Script: `ingestion/omi/smart_monitor.sh`
-- Log: `ingestion/omi/smart_monitor.log`
-- Ingestion log: `ingestion/omi/omi_2018_ingestion.log`
+### Parallel Ingestion Setup
+- **iMac** (192.168.12.142): Running 2026 ingestion
+
+### After iMac Reboot
+Restart the 2026 ingestion:
+```bash
+ssh pete@192.168.12.142 "cd ~/Projects/italian-property-heatmap/ingestion/omi && nohup caffeinate -i ./run_2026_imac.sh > omi_2026_full.log 2>&1 &"
+```
+
+### Recent Robustness Improvements (Sept 2026)
+The `load_omi_values.py` script was improved to handle transient database issues:
+- Connection timeout (30s) and TCP keepalive settings
+- Periodic connection health checks every 15s during processing
+- Transaction state reset (rollback) before health checks
+- Better error recovery with automatic reconnection
+- Improved error logging with exception class names
 
 ### Useful Commands
 ```bash
-# Check if ingestion is running
-ps aux | grep load_omi
+# Check iMac 2026 ingestion
+ssh pete@192.168.12.142 "tail -15 ~/Projects/italian-property-heatmap/ingestion/omi/omi_2026_full.log"
+ssh pete@192.168.12.142 "grep 'Processing province' ~/Projects/italian-property-heatmap/ingestion/omi/omi_2026_full.log | tail -1"
 
-# Check smart monitor status
-tail -10 ingestion/omi/smart_monitor.log
-
-# Check ingestion progress
-tail -20 ingestion/omi/omi_2018_ingestion.log
+# Restart 2026 on iMac
+ssh pete@192.168.12.142 "cd ~/Projects/italian-property-heatmap/ingestion/omi && nohup caffeinate -i ./run_2026_imac.sh > omi_2026_full.log 2>&1 &"
 ```
 
 ### Ingestion Script Details
@@ -58,6 +74,21 @@ python load_omi_values.py --calculate-zone-changes
 - Plan file: `~/.claude/plans/harmonic-brewing-melody.md`
 - Shows property price trends over selectable time periods (1yr, 2yr, 3yr, 5yr, since 2016)
 - Diverging color scale: red (declining) → gray (stable) → green (growing)
+
+## Future Data Roadmap
+
+### Next: NTN Transaction Volume Data
+After zone ingestion completes (2019-2025), ingest NTN (Numero Transazioni Normalizzate) data:
+- **Source:** OMI Forniture Dati (free, requires SPID auth)
+- **Data:** Transaction counts by municipality, quarterly from 2011
+- **Value:** Shows market activity/liquidity indicators
+- **Download:** CSV via https://www.agenziaentrate.gov.it/portale/schede/fabbricatiterreni/omi/forniture-dati-omi
+
+### Deferred Until App Growth
+- **Actual transaction prices** - OpenAPI.com API (€0.20-4/call, expensive at scale)
+- **Catasto geometries** - Cadastral parcel boundaries
+- **APE energy certificates** - Building energy ratings
+- **Conservatoria data** - Mortgage/lien records
 
 ## Database Notes
 - Using Supabase (upgraded plan with expanded storage)

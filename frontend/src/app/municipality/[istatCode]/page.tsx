@@ -736,14 +736,13 @@ export default function MunicipalityDetailPage({
         {/* Score Cards */}
         <div className="hero__scores">
           <ScoreRing value={f?.opportunityScore ?? null} label="Opportunity" color="#c4785c" delay={0} />
-          <ScoreRing value={f?.confidenceScore ?? null} label="Confidence" color="#528b99" delay={100} />
-          <div className="hero__metric" style={{ animationDelay: "200ms" }}>
+          <div className="hero__metric" style={{ animationDelay: "100ms" }}>
             <span className="hero__metric-value">
               {formatPercent(f?.appreciationPct)}
             </span>
             <span className="hero__metric-label">12M Appreciation</span>
           </div>
-          <div className="hero__metric" style={{ animationDelay: "300ms" }}>
+          <div className="hero__metric" style={{ animationDelay: "200ms" }}>
             <span className="hero__metric-value">
               {formatPercent(f?.grossYieldPct, false)}
             </span>

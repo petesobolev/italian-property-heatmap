@@ -296,15 +296,11 @@ export function MunicipalityDrawer({
                 </p>
               </div>
 
-              {/* Key Scores */}
+              {/* Opportunity Score */}
               <div className="drawer__scores">
                 <div className="drawer__score-item">
                   <ScoreRing value={m.opportunityScore} color="#c4785c" />
                   <span className="drawer__score-label">Opportunity</span>
-                </div>
-                <div className="drawer__score-item">
-                  <ScoreRing value={m.confidenceScore} color="#528b99" />
-                  <span className="drawer__score-label">Confidence</span>
                 </div>
               </div>
             </>
