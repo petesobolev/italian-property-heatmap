@@ -436,6 +436,9 @@ export function MapInner() {
   // Track active tooltip layer to prevent ghost tooltips
   const activeTooltipLayerRef = useRef<Layer | null>(null);
 
+  // Track pending zoom after region/province change
+  const pendingZoomRef = useRef<{ type: 'region' | 'province' | 'clear' } | null>(null);
+
   const handleAddToCompare = useCallback((municipality: MunicipalityData) => {
     setCompareList((prev) => {
       // Don't add if already in list or at max capacity
@@ -472,37 +475,32 @@ export function MapInner() {
     semestersToAverage: 1,
   });
 
-  // Mock regions/provinces for UI (will be populated from API later)
+  // Regions (static list - 20 Italian regions, alphabetized)
   const [regions] = useState<{ code: string; name: string }[]>([
-    { code: "01", name: "Piemonte" },
-    { code: "02", name: "Valle d'Aosta" },
-    { code: "03", name: "Lombardia" },
-    { code: "04", name: "Trentino-Alto Adige" },
-    { code: "05", name: "Veneto" },
-    { code: "06", name: "Friuli-Venezia Giulia" },
-    { code: "07", name: "Liguria" },
-    { code: "08", name: "Emilia-Romagna" },
-    { code: "09", name: "Toscana" },
-    { code: "10", name: "Umbria" },
-    { code: "11", name: "Marche" },
-    { code: "12", name: "Lazio" },
     { code: "13", name: "Abruzzo" },
-    { code: "14", name: "Molise" },
-    { code: "15", name: "Campania" },
-    { code: "16", name: "Puglia" },
     { code: "17", name: "Basilicata" },
     { code: "18", name: "Calabria" },
-    { code: "19", name: "Sicilia" },
+    { code: "15", name: "Campania" },
+    { code: "08", name: "Emilia-Romagna" },
+    { code: "06", name: "Friuli-Venezia Giulia" },
+    { code: "12", name: "Lazio" },
+    { code: "07", name: "Liguria" },
+    { code: "03", name: "Lombardia" },
+    { code: "11", name: "Marche" },
+    { code: "14", name: "Molise" },
+    { code: "01", name: "Piemonte" },
+    { code: "16", name: "Puglia" },
     { code: "20", name: "Sardegna" },
+    { code: "19", name: "Sicilia" },
+    { code: "09", name: "Toscana" },
+    { code: "04", name: "Trentino-Alto Adige" },
+    { code: "10", name: "Umbria" },
+    { code: "02", name: "Valle d'Aosta" },
+    { code: "05", name: "Veneto" },
   ]);
 
-  const [provinces] = useState<{ code: string; name: string; regionCode: string }[]>([
-    { code: "015", name: "Milano", regionCode: "03" },
-    { code: "058", name: "Roma", regionCode: "12" },
-    { code: "048", name: "Firenze", regionCode: "09" },
-    { code: "027", name: "Venezia", regionCode: "05" },
-    { code: "063", name: "Napoli", regionCode: "15" },
-  ]);
+  // Provinces (fetched from API)
+  const [provinces, setProvinces] = useState<{ code: string; name: string; regionCode: string }[]>([]);
 
   // Command palette keyboard shortcut (⌘K / Ctrl+K)
   useEffect(() => {
@@ -515,6 +513,22 @@ export function MapInner() {
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
+  }, []);
+
+  // Fetch provinces from API on mount
+  useEffect(() => {
+    async function fetchProvinces() {
+      try {
+        const res = await fetch("/api/filters/provinces");
+        if (res.ok) {
+          const data = await res.json();
+          setProvinces(data.provinces || []);
+        }
+      } catch (err) {
+        console.error("Failed to fetch provinces:", err);
+      }
+    }
+    fetchProvinces();
   }, []);
 
   // Handle zoom to location bounds from command palette
@@ -674,6 +688,68 @@ export function MapInner() {
       cancelled = true;
     };
   }, [filters.metric, filters.region, filters.province, filters.propertySegment, filters.semestersToAverage, filters.valueChangePeriod]);
+
+  // Set pending zoom when region/province filter changes
+  const prevRegionRef = useRef<string | null | undefined>(undefined);
+  const prevProvinceRef = useRef<string | null | undefined>(undefined);
+
+  useEffect(() => {
+    // Skip on initial mount
+    if (prevRegionRef.current === undefined) {
+      prevRegionRef.current = filters.region;
+      prevProvinceRef.current = filters.province;
+      return;
+    }
+
+    const regionChanged = filters.region !== prevRegionRef.current;
+    const provinceChanged = filters.province !== prevProvinceRef.current;
+
+    prevRegionRef.current = filters.region;
+    prevProvinceRef.current = filters.province;
+
+    if (!regionChanged && !provinceChanged) return;
+
+    // Set pending zoom - will be executed after new GeoJSON loads
+    if (!filters.region && !filters.province) {
+      pendingZoomRef.current = { type: 'clear' };
+    } else if (filters.province) {
+      pendingZoomRef.current = { type: 'province' };
+    } else {
+      pendingZoomRef.current = { type: 'region' };
+    }
+  }, [filters.region, filters.province]);
+
+  // Execute pending zoom after GeoJSON loads
+  useEffect(() => {
+    if (!pendingZoomRef.current || !mapRef.current) return;
+
+    const pending = pendingZoomRef.current;
+    pendingZoomRef.current = null; // Consume the pending zoom
+
+    // If clearing, zoom to Italy
+    if (pending.type === 'clear') {
+      mapRef.current.flyTo([41.8719, 12.5674], 6, { duration: 0.8 });
+      return;
+    }
+
+    // Calculate bounds from the loaded GeoJSON
+    if (!geojson) return;
+
+    try {
+      const geoJsonLayer = L.geoJSON(geojson as GeoJsonObject);
+      const bounds = geoJsonLayer.getBounds();
+
+      if (bounds.isValid()) {
+        mapRef.current.flyToBounds(bounds, {
+          padding: [20, 20],
+          duration: 0.8,
+          maxZoom: pending.type === 'province' ? 13 : 11,
+        });
+      }
+    } catch (e) {
+      console.warn("Failed to calculate bounds for zoom:", e);
+    }
+  }, [geojson]);
 
   // Fetch flat tax eligibility data from database (includes Sisma 2016 municipalities)
   useEffect(() => {
