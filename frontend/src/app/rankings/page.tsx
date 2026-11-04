@@ -18,6 +18,7 @@ interface RankingEntry {
   annualizedPriceChangePct: number | null;
   salesPer1000Pop: number | null;
   zonesWithData: number | null;
+  opportunityScore: number | null;
 }
 
 interface SearchResult {
@@ -70,13 +71,15 @@ type SortField =
   | "value_mid_eur_sqm"
   | "gross_yield_pct"
   | "annualized_price_change_pct"
-  | "ntn_per_1000_pop";
+  | "ntn_per_1000_pop"
+  | "opportunity_score";
 
 const SORT_OPTIONS: { value: SortField; label: string }[] = [
   { value: "value_mid_eur_sqm", label: "Property Value" },
   { value: "gross_yield_pct", label: "Gross Yield" },
   { value: "annualized_price_change_pct", label: "Price Change" },
   { value: "ntn_per_1000_pop", label: "Sales Activity" },
+  { value: "opportunity_score", label: "Opportunity" },
 ];
 
 function formatCurrency(value: number | null): string {
@@ -363,6 +366,7 @@ export default function RankingsPage() {
       "Gross Yield (%)",
       "Price Change (% ann.)",
       "Sales per 1k Pop",
+      "Opportunity Score",
     ];
     const rows = rankings.map((r) => [
       r.rank,
@@ -373,6 +377,7 @@ export default function RankingsPage() {
       r.grossYieldPct?.toFixed(2) || "",
       r.annualizedPriceChangePct?.toFixed(2) || "",
       r.salesPer1000Pop?.toFixed(1) || "",
+      r.opportunityScore?.toFixed(0) || "",
     ]);
 
     const csv = [headers, ...rows].map((row) => row.join(",")).join("\n");
@@ -700,20 +705,28 @@ export default function RankingsPage() {
                       Sales
                       {sortBy === "ntn_per_1000_pop" && <span className="sort-arrow">{sortOrder === "desc" ? "↓" : "↑"}</span>}
                     </th>
+                    <th
+                      className={`table__th table__th--sortable ${sortBy === "opportunity_score" ? "table__th--sorted" : ""}`}
+                      onClick={() => handleSort("opportunity_score")}
+                      title="Investment opportunity score (0-100)"
+                    >
+                      Opportunity
+                      {sortBy === "opportunity_score" && <span className="sort-arrow">{sortOrder === "desc" ? "↓" : "↑"}</span>}
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
                   {loading ? (
                     Array.from({ length: 10 }).map((_, i) => (
                       <tr key={i} className="table__row table__row--loading">
-                        <td colSpan={7}>
+                        <td colSpan={8}>
                           <div className="skeleton" />
                         </td>
                       </tr>
                     ))
                   ) : rankings.length === 0 ? (
                     <tr>
-                      <td colSpan={7} className="table__empty">
+                      <td colSpan={8} className="table__empty">
                         No municipalities found matching your criteria
                       </td>
                     </tr>
@@ -759,6 +772,15 @@ export default function RankingsPage() {
                         </td>
                         <td className="table__td table__td--value">
                           {formatNumber(r.salesPer1000Pop)}
+                        </td>
+                        <td className="table__td table__td--opportunity">
+                          {r.opportunityScore != null ? (
+                            <span className={`opportunity-badge ${r.opportunityScore >= 70 ? "opportunity-badge--high" : r.opportunityScore >= 50 ? "opportunity-badge--medium" : ""}`}>
+                              {Math.round(r.opportunityScore)}
+                            </span>
+                          ) : (
+                            "—"
+                          )}
                         </td>
                       </tr>
                       );
@@ -1565,6 +1587,34 @@ export default function RankingsPage() {
 
         .percent-value.negative {
           color: #f87171;
+        }
+
+        .table__td--opportunity {
+          text-align: center;
+        }
+
+        .opportunity-badge {
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          min-width: 36px;
+          padding: 4px 8px;
+          font-size: 0.8rem;
+          font-weight: 600;
+          color: #8b9bb4;
+          background: rgba(255, 255, 255, 0.04);
+          border-radius: 6px;
+          font-variant-numeric: tabular-nums;
+        }
+
+        .opportunity-badge--medium {
+          background: rgba(251, 191, 36, 0.15);
+          color: #fbbf24;
+        }
+
+        .opportunity-badge--high {
+          background: rgba(74, 222, 128, 0.15);
+          color: #4ade80;
         }
 
         .table__empty {

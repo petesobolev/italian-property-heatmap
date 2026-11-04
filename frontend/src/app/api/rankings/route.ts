@@ -5,7 +5,8 @@ type SortField =
   | "value_mid_eur_sqm"
   | "gross_yield_pct"
   | "annualized_price_change_pct"
-  | "ntn_per_1000_pop";
+  | "ntn_per_1000_pop"
+  | "opportunity_score";
 
 interface CacheRow {
   municipality_id: string;
@@ -25,6 +26,7 @@ interface CacheRow {
   latest_period: string;
   earliest_period: string;
   periods_count: number;
+  opportunity_score: number | null;
 }
 
 interface MunicipalityInfo {
@@ -78,6 +80,7 @@ export async function GET(request: Request) {
   }
 
   // Build base query on the materialized view
+  // opportunity_score is now stored in the cache, so we can sort by it directly
   let query = supabase
     .schema("mart")
     .from("municipality_rankings_cache")
@@ -92,8 +95,7 @@ export async function GET(request: Request) {
   }
 
   // Apply sorting
-  const sortColumn = sortBy;
-  query = query.order(sortColumn, {
+  query = query.order(sortBy, {
     ascending: sortOrder,
     nullsFirst: false
   });
@@ -110,6 +112,25 @@ export async function GET(request: Request) {
 
   const rows = (data ?? []) as CacheRow[];
   const totalCount = count ?? 0;
+
+  // Fetch stored opportunity scores from forecasts table (these take precedence)
+  const storedScores = new Map<string, number>();
+  if (rows.length > 0) {
+    const municipalityIds = rows.map((r) => r.municipality_id);
+    const { data: forecastData } = await supabase
+      .schema("model")
+      .from("forecasts_municipality")
+      .select("municipality_id, opportunity_score")
+      .in("municipality_id", municipalityIds)
+      .not("opportunity_score", "is", null)
+      .order("forecast_date", { ascending: false });
+
+    for (const f of forecastData ?? []) {
+      if (!storedScores.has(f.municipality_id) && f.opportunity_score != null) {
+        storedScores.set(f.municipality_id, f.opportunity_score);
+      }
+    }
+  }
 
   if (rows.length === 0) {
     return NextResponse.json({
@@ -215,6 +236,7 @@ export async function GET(request: Request) {
   }
 
   // Build final response
+  // Use stored forecast score if available, otherwise use calculated score from cache
   const rankings = rows.map((m, index) => ({
     rank: offset + index + 1,
     municipalityId: m.municipality_id,
@@ -230,6 +252,7 @@ export async function GET(request: Request) {
     annualizedPriceChangePct: m.annualized_price_change_pct,
     salesPer1000Pop: m.ntn_per_1000_pop,
     zonesWithData: m.zones_with_data,
+    opportunityScore: storedScores.get(m.municipality_id) ?? m.opportunity_score,
   }));
 
   // Generate periods array from latest to earliest
@@ -433,6 +456,31 @@ async function getDynamicRankings(
     }
   }
 
+  // Fetch opportunity scores for all municipalities
+  const opportunityScores = new Map<string, number | null>();
+  {
+    const municipalityIds = Array.from(aggregated.keys());
+    if (municipalityIds.length > 0) {
+      // Batch fetch in chunks of 500 to avoid query limits
+      const chunkSize = 500;
+      for (let i = 0; i < municipalityIds.length; i += chunkSize) {
+        const chunk = municipalityIds.slice(i, i + chunkSize);
+        const { data: forecastData } = await supabase
+          .schema("model")
+          .from("forecasts_municipality")
+          .select("municipality_id, opportunity_score")
+          .in("municipality_id", chunk)
+          .order("forecast_date", { ascending: false });
+
+        for (const f of forecastData ?? []) {
+          if (!opportunityScores.has(f.municipality_id)) {
+            opportunityScores.set(f.municipality_id, f.opportunity_score);
+          }
+        }
+      }
+    }
+  }
+
   // Build ranking entries
   interface RankingData {
     municipalityId: string;
@@ -448,6 +496,7 @@ async function getDynamicRankings(
     annualizedPriceChangePct: number | null;
     salesPer1000Pop: number | null;
     zonesWithData: number;
+    opportunityScore: number | null;
   }
 
   const rankingEntries: RankingData[] = [];
@@ -469,6 +518,49 @@ async function getDynamicRankings(
       annualizedChange = (Math.pow(1 + totalChange, 1 / years) - 1) * 100;
     }
 
+    // Use forecast opportunity score if available, otherwise calculate from metrics
+    // Matches the calculation in /api/municipality/[istatCode]/route.ts
+    let opportunityScore = opportunityScores.get(municipalityId) ?? null;
+
+    if (opportunityScore === null && avgValue) {
+      // 1. Yield Component (0-35 points)
+      const yieldScore = grossYield
+        ? Math.min(35, grossYield * 5)
+        : 0;
+
+      // 2. Appreciation Trend Component (0-25 points)
+      let appreciationScore = 0;
+      if (annualizedChange !== null) {
+        if (annualizedChange >= 0 && annualizedChange <= 10) {
+          appreciationScore = 25 - Math.abs(annualizedChange - 5) * 3;
+        } else if (annualizedChange < 0 && annualizedChange >= -5) {
+          appreciationScore = Math.max(0, 10 + annualizedChange * 2);
+        }
+        appreciationScore = Math.max(0, appreciationScore);
+      }
+
+      // 3. Affordability Component (0-20 points)
+      let affordabilityScore = 0;
+      if (avgValue < 1000) {
+        affordabilityScore = 20;
+      } else if (avgValue < 2000) {
+        affordabilityScore = 20 - (avgValue - 1000) / 100;
+      } else if (avgValue < 4000) {
+        affordabilityScore = 10 - (avgValue - 2000) / 400;
+      } else {
+        affordabilityScore = Math.max(0, 5 - (avgValue - 4000) / 2000);
+      }
+
+      // 4. Data Quality Component (0-10 points)
+      const dataQualityScore = Math.min(10, data.valueCount / 3);
+
+      // Total with scaling to compensate for missing stability component
+      opportunityScore = Math.round(
+        (yieldScore + appreciationScore + affordabilityScore + dataQualityScore) * 1.1
+      );
+      opportunityScore = Math.max(0, Math.min(100, opportunityScore));
+    }
+
     rankingEntries.push({
       municipalityId,
       name: info.municipality_name,
@@ -483,6 +575,7 @@ async function getDynamicRankings(
       annualizedPriceChangePct: annualizedChange,
       salesPer1000Pop: null, // Not available in dynamic query
       zonesWithData: data.valueCount,
+      opportunityScore,
     });
   }
 
@@ -490,6 +583,7 @@ async function getDynamicRankings(
   const sortKey = sortBy === "ntn_per_1000_pop" ? "salesPer1000Pop" :
                   sortBy === "gross_yield_pct" ? "grossYieldPct" :
                   sortBy === "annualized_price_change_pct" ? "annualizedPriceChangePct" :
+                  sortBy === "opportunity_score" ? "opportunityScore" :
                   "valueMidEurSqm";
 
   rankingEntries.sort((a, b) => {
