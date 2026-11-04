@@ -708,7 +708,7 @@ export default function RankingsPage() {
                     <th
                       className={`table__th table__th--sortable ${sortBy === "opportunity_score" ? "table__th--sorted" : ""}`}
                       onClick={() => handleSort("opportunity_score")}
-                      title="Investment opportunity score (0-100)"
+                      title="Investment opportunity score (0-100) based on selected data period"
                     >
                       Opportunity
                       {sortBy === "opportunity_score" && <span className="sort-arrow">{sortOrder === "desc" ? "↓" : "↑"}</span>}
