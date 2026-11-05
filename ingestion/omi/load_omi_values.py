@@ -53,6 +53,8 @@ RETRY_DELAY_SECONDS = 5
 HTTP_TIMEOUT_SECONDS = 20  # Shorter timeout, fail fast and retry
 MUNICIPALITY_TIMEOUT_SECONDS = 300  # 5 minutes max per municipality
 STALL_DETECTION_SECONDS = 120  # Log warning if no progress for 2 minutes
+CONNECTION_TIMEOUT_SECONDS = 30  # Max time to establish database connection
+CONNECTION_CHECK_INTERVAL = 15  # How often to check connection health during processing
 
 
 class ProgressTracker:
@@ -688,10 +690,11 @@ class DatabaseLoader:
         self.ingestion_run_id: Optional[int] = None
         self._istat_cache: dict[str, Optional[str]] = {}
         self._accent_stripped_cache: dict[str, str] = {}  # stripped_name -> municipality_id
+        self._last_connection_check: float = 0.0
         self._connect()
 
     def _connect(self):
-        """Establish database connection."""
+        """Establish database connection with timeout and keepalive."""
         if self.cursor:
             try:
                 self.cursor.close()
@@ -703,19 +706,54 @@ class DatabaseLoader:
             except Exception:
                 pass
 
-        self.conn = psycopg2.connect(**self.db_params)
+        # Add connection timeout and keepalive settings
+        connect_params = {
+            **self.db_params,
+            'connect_timeout': CONNECTION_TIMEOUT_SECONDS,
+            'keepalives': 1,
+            'keepalives_idle': 30,  # Start keepalive after 30s idle
+            'keepalives_interval': 10,  # Send keepalive every 10s
+            'keepalives_count': 3,  # Fail after 3 missed keepalives
+        }
+        self.conn = psycopg2.connect(**connect_params)
         self.conn.autocommit = False
         self.cursor = self.conn.cursor(cursor_factory=RealDictCursor)
+        self._last_connection_check = time.time()
         logger.info("Connected to database via direct PostgreSQL connection")
 
-    def _ensure_connection(self):
-        """Check connection health and reconnect if needed."""
+    def _ensure_connection(self, force_check: bool = False):
+        """Check connection health and reconnect if needed.
+
+        Args:
+            force_check: If True, always run health check. Otherwise, only check
+                         if CONNECTION_CHECK_INTERVAL has elapsed.
+        """
+        # Skip check if we checked recently (unless forced)
+        now = time.time()
+        if not force_check and (now - self._last_connection_check) < CONNECTION_CHECK_INTERVAL:
+            return
+
+        self._last_connection_check = now
+
         try:
-            # Simple health check
-            self.cursor.execute("SELECT 1 AS health_check")
-            self.cursor.fetchone()
-        except (psycopg2.InterfaceError, psycopg2.OperationalError, psycopg2.ProgrammingError) as e:
-            logger.warning(f"Connection lost, reconnecting: {e}")
+            # First, try to rollback any uncommitted transaction to reset state
+            # This prevents "current transaction is aborted" errors
+            if self.conn and not self.conn.closed:
+                try:
+                    self.conn.rollback()
+                except Exception:
+                    pass  # Connection might be dead, will reconnect below
+
+            # Health check with timeout
+            if self.cursor and not self.cursor.closed:
+                self.cursor.execute("SELECT 1 AS health_check")
+                self.cursor.fetchone()
+            else:
+                raise psycopg2.InterfaceError("Cursor is closed or None")
+
+        except (psycopg2.InterfaceError, psycopg2.OperationalError, psycopg2.ProgrammingError,
+                psycopg2.InternalError, AttributeError) as e:
+            logger.warning(f"Connection unhealthy, reconnecting: {type(e).__name__}: {e}")
             self._connect()
             # Re-establish ingestion run context if we had one
             if self.ingestion_run_id:
@@ -723,23 +761,33 @@ class DatabaseLoader:
 
     def municipality_has_data(self, municipality_id: str, period_id: str) -> bool:
         """Check if a municipality already has property value data for a given period."""
-        self._ensure_connection()
-        # Check mart table (aggregated data) since raw data is deleted after aggregation
-        self.cursor.execute("""
-            SELECT EXISTS(
-                SELECT 1 FROM mart.municipality_values_semester
-                WHERE municipality_id = %s AND period_id = %s
-                LIMIT 1
-            )
-        """, (municipality_id, period_id))
-        result = self.cursor.fetchone()
-        return result['exists'] if result else False
+        for attempt in range(2):
+            try:
+                self._ensure_connection(force_check=True)
+                # Check mart table (aggregated data) since raw data is deleted after aggregation
+                self.cursor.execute("""
+                    SELECT EXISTS(
+                        SELECT 1 FROM mart.municipality_values_semester
+                        WHERE municipality_id = %s AND period_id = %s
+                        LIMIT 1
+                    )
+                """, (municipality_id, period_id))
+                result = self.cursor.fetchone()
+                return result['exists'] if result else False
+            except (psycopg2.InterfaceError, psycopg2.OperationalError, psycopg2.ProgrammingError,
+                    psycopg2.InternalError) as e:
+                if attempt == 0:
+                    logger.warning(f"Municipality data check failed, reconnecting: {type(e).__name__}: {e}")
+                    self._connect()
+                else:
+                    raise
+        return False
 
     def municipality_has_zone_data(self, municipality_id: str, period_id: str) -> bool:
         """Check if a municipality already has zone-level property value data for a given period."""
         for attempt in range(2):
             try:
-                self._ensure_connection()
+                self._ensure_connection(force_check=True)
                 # Check zone values table - join with zones to find by municipality
                 self.cursor.execute("""
                     SELECT EXISTS(
@@ -1450,6 +1498,7 @@ def run_ingestion(
     max_retries: int = 3,
     municipality_timeout: int = MUNICIPALITY_TIMEOUT_SECONDS,
     force_zone_reload: bool = False,
+    zone_types: list[str] = None,
 ):
     """
     Main ingestion function.
@@ -1464,6 +1513,7 @@ def run_ingestion(
         municipalities: List of specific ISTAT codes to process (bypasses province iteration)
         max_retries: Maximum retry attempts for failed municipalities
         municipality_timeout: Max seconds per municipality before auto-skip
+        zone_types: List of zone types to process (e.g., ['B', 'C']). If None, all zones are processed.
     """
     logger.info("=" * 60)
     logger.info("Starting OMI Property Values Ingestion")
@@ -1505,6 +1555,12 @@ def run_ingestion(
             # Get zones for this comune (using cadastral code for API)
             progress_tracker.heartbeat(f"Getting zones for {comune.name}")
             zones = omi_client.get_zones(comune.codcom)
+
+            # Filter by zone types if specified
+            if zones and zone_types:
+                original_count = len(zones)
+                zones = [z for z in zones if z.zone_type in zone_types]
+                logger.info(f"    Filtered to {len(zones)}/{original_count} zones (types: {', '.join(zone_types)})")
 
             if not zones:
                 logger.debug(f"    No zones found for {comune.codcom}")
@@ -1558,7 +1614,9 @@ def run_ingestion(
 
             result_holder['result'] = (loaded, rejected, True)
 
-        except (psycopg2.InterfaceError, psycopg2.OperationalError) as e:
+        except (psycopg2.InterfaceError, psycopg2.OperationalError, psycopg2.InternalError,
+                psycopg2.ProgrammingError) as e:
+            # All database-related errors that warrant a reconnect
             result_holder['error'] = ('connection', e)
         except OMIIngestionError as e:
             result_holder['error'] = ('omi', e)
@@ -1584,9 +1642,10 @@ def run_ingestion(
             thread.daemon = True
             thread.start()
 
-            # Wait with periodic stall checks
-            check_interval = min(30, STALL_DETECTION_SECONDS / 2)
+            # Wait with periodic stall and connection checks
+            check_interval = min(CONNECTION_CHECK_INTERVAL, STALL_DETECTION_SECONDS / 4)
             elapsed = 0
+            last_connection_check = start_time
 
             while thread.is_alive() and elapsed < municipality_timeout:
                 thread.join(timeout=check_interval)
@@ -1597,6 +1656,14 @@ def run_ingestion(
                 if stall_time:
                     current_op = progress_tracker.get_current_operation()
                     logger.warning(f"    STALL DETECTED: No progress for {stall_time:.0f}s - last operation: {current_op}")
+
+                # Periodic connection health check (every CONNECTION_CHECK_INTERVAL)
+                if time.time() - last_connection_check >= CONNECTION_CHECK_INTERVAL:
+                    try:
+                        db_loader._ensure_connection(force_check=True)
+                        last_connection_check = time.time()
+                    except Exception as e:
+                        logger.warning(f"    Connection check failed during processing: {e}")
 
             # Check if thread is still running (timeout occurred)
             if thread.is_alive():
@@ -1633,14 +1700,19 @@ def run_ingestion(
 
             if 'error' in result_holder:
                 error_type, error = result_holder['error']
+                error_class = type(error).__name__
 
                 if error_type == 'connection':
-                    logger.warning(f"    Connection error for {comune.name} (attempt {attempt}/{max_retries}): {error}")
+                    logger.warning(f"    Connection error for {comune.name} (attempt {attempt}/{max_retries}): {error_class}: {error}")
                     if attempt < max_retries:
                         wait_time = 2 ** attempt
-                        logger.info(f"    Waiting {wait_time}s before retry...")
+                        logger.info(f"    Waiting {wait_time}s before retry, then reconnecting...")
                         time.sleep(wait_time)
-                        db_loader._connect()
+                        try:
+                            db_loader._connect()
+                            logger.info(f"    Reconnected successfully")
+                        except Exception as reconnect_error:
+                            logger.warning(f"    Reconnect failed: {reconnect_error}")
                         continue
                     else:
                         logger.error(f"    Failed after {max_retries} attempts: {comune.name}")
@@ -1651,7 +1723,7 @@ def run_ingestion(
                     return 0, 0, True  # OMI errors are not retryable
 
                 else:  # unexpected
-                    logger.warning(f"    Unexpected error for {comune.name} (attempt {attempt}/{max_retries}): {error}")
+                    logger.warning(f"    Unexpected error for {comune.name} (attempt {attempt}/{max_retries}): {error_class}: {error}")
                     if attempt < max_retries:
                         wait_time = 2 ** attempt
                         logger.info(f"    Waiting {wait_time}s before retry...")
@@ -1955,6 +2027,12 @@ def main():
         help='Calculate zone change metrics (run after historical data is fully ingested)'
     )
 
+    parser.add_argument(
+        '--zone-types',
+        nargs='+',
+        help='Filter to specific zone types (e.g., B C D E R). Useful for processing large municipalities in batches.'
+    )
+
     args = parser.parse_args()
 
     if args.verbose:
@@ -1983,6 +2061,7 @@ def main():
             max_retries=args.max_retries,
             municipality_timeout=args.municipality_timeout,
             force_zone_reload=args.force_zone_reload,
+            zone_types=args.zone_types,
         )
     except KeyboardInterrupt:
         logger.info("\nIngestion interrupted by user")

@@ -11,34 +11,7 @@
 - **2023**: Complete
 - **2024**: Complete
 - **2025**: Complete
-- **2026**: In progress on iMac (~42% complete)
-
-### Parallel Ingestion Setup
-- **iMac** (192.168.12.142): Running 2026 ingestion
-
-### After iMac Reboot
-Restart the 2026 ingestion:
-```bash
-ssh pete@192.168.12.142 "cd ~/Projects/italian-property-heatmap/ingestion/omi && nohup caffeinate -i ./run_2026_imac.sh > omi_2026_full.log 2>&1 &"
-```
-
-### Recent Robustness Improvements (Sept 2026)
-The `load_omi_values.py` script was improved to handle transient database issues:
-- Connection timeout (30s) and TCP keepalive settings
-- Periodic connection health checks every 15s during processing
-- Transaction state reset (rollback) before health checks
-- Better error recovery with automatic reconnection
-- Improved error logging with exception class names
-
-### Useful Commands
-```bash
-# Check iMac 2026 ingestion
-ssh pete@192.168.12.142 "tail -15 ~/Projects/italian-property-heatmap/ingestion/omi/omi_2026_full.log"
-ssh pete@192.168.12.142 "grep 'Processing province' ~/Projects/italian-property-heatmap/ingestion/omi/omi_2026_full.log | tail -1"
-
-# Restart 2026 on iMac
-ssh pete@192.168.12.142 "cd ~/Projects/italian-property-heatmap/ingestion/omi && nohup caffeinate -i ./run_2026_imac.sh > omi_2026_full.log 2>&1 &"
-```
+- **2026**: Complete
 
 ### Ingestion Script Details
 - Location: `ingestion/omi/load_omi_values.py`
@@ -46,6 +19,7 @@ ssh pete@192.168.12.142 "cd ~/Projects/italian-property-heatmap/ingestion/omi &&
 - Auto-deletes raw data after aggregation to save storage
 - `--force-zone-reload` flag: Re-ingest to populate zone-level historical data
 - `--calculate-zone-changes` flag: Calculate zone change metrics after ingestion
+- `--zone-types` flag: Filter to specific zone types (B, C, D, E, R) for batched processing of large municipalities
 
 ### Zone Historical Re-ingestion
 To populate zone-level value change data, run:
