@@ -1061,6 +1061,20 @@ class DatabaseLoader:
         self.conn.commit()
         logger.info(f"Completed ingestion run {self.ingestion_run_id}: {status}")
 
+        # Refresh available periods cache for faster map loading
+        self._refresh_available_periods_cache()
+
+    def _refresh_available_periods_cache(self):
+        """Refresh the materialized view for available periods."""
+        try:
+            self._ensure_connection()
+            self.cursor.execute("REFRESH MATERIALIZED VIEW mart.available_periods_cache")
+            self.conn.commit()
+            logger.info("Refreshed available_periods_cache")
+        except Exception as e:
+            self.conn.rollback()
+            logger.warning(f"Could not refresh available_periods_cache: {e}")
+
     def ensure_time_period(self, semester_id: str):
         """Ensure time period exists for the semester."""
         year = int(semester_id[:4])
