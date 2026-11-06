@@ -65,7 +65,7 @@ export async function GET(request: Request) {
       })),
     }, {
       headers: {
-        "Cache-Control": "public, max-age=300, stale-while-revalidate=3600",
+        "Cache-Control": "public, max-age=3600, stale-while-revalidate=86400",
       },
     });
   }
@@ -125,7 +125,7 @@ export async function GET(request: Request) {
       })),
     }, {
       headers: {
-        "Cache-Control": "public, max-age=300, stale-while-revalidate=3600",
+        "Cache-Control": "public, max-age=3600, stale-while-revalidate=86400",
       },
     });
   }
@@ -165,7 +165,7 @@ export async function GET(request: Request) {
       })),
     }, {
       headers: {
-        "Cache-Control": "public, max-age=300, stale-while-revalidate=3600",
+        "Cache-Control": "public, max-age=3600, stale-while-revalidate=86400",
       },
     });
   }
@@ -211,9 +211,8 @@ export async function GET(request: Request) {
     }
 
     // Get municipality values for all selected periods
-    // Note: Supabase defaults to 1000 rows max, so we fetch in batches
-    // Fetch all rows - use larger batch size (Supabase supports up to 10k)
-    // For ~8k municipalities × N semesters, we typically need 1-3 batches
+    // Fetch in batches (Supabase limits to 1000 rows per request)
+    // For ~8k municipalities, typically need 8 batches per semester
     const allMartRows: { municipality_id: string; value_mid_eur_sqm: number; period_id: string }[] = [];
     const batchSize = 1000;
     let offset = 0;
@@ -271,7 +270,7 @@ export async function GET(request: Request) {
         })),
       }, {
         headers: {
-          "Cache-Control": "public, max-age=300, stale-while-revalidate=3600",
+          "Cache-Control": "public, max-age=3600, stale-while-revalidate=86400",
         },
       });
     }
@@ -307,7 +306,7 @@ export async function GET(request: Request) {
       features,
     }, {
       headers: {
-        "Cache-Control": "public, max-age=300, stale-while-revalidate=3600",
+        "Cache-Control": "public, max-age=3600, stale-while-revalidate=86400",
       },
     });
   }
@@ -879,7 +878,7 @@ export async function GET(request: Request) {
     })),
   }, {
     headers: {
-      "Cache-Control": "public, max-age=300, stale-while-revalidate=3600",
+      "Cache-Control": "public, max-age=3600, stale-while-revalidate=86400",
     },
   });
 }
