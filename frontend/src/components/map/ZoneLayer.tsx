@@ -70,7 +70,6 @@ const COLOR_SCALES: Record<string, number[][]> = {
 
 // Fixed ranges for certain metrics (must match MapInner.tsx and MapLegend.tsx)
 const FIXED_RANGES: Record<string, { min: number; max: number }> = {
-  price_variance_pct: { min: 0, max: 100 },
   gross_yield_pct: { min: 2, max: 8 }, // Typical Italian yields range
   value_pct_change: { min: -20, max: 20 }, // +/- 20% range for value change
 };
@@ -212,9 +211,13 @@ export function ZoneLayer({ municipalityId, visible, metric = "value_mid_eur_sqm
         if (fixedRange) {
           setValueDomain(fixedRange);
         } else {
+          // Metrics where 0 means "no data" (e.g., earthquake zones with no market)
+          const zeroMeansNoData = ["value_mid_eur_sqm", "rent_mid_eur_sqm_month", "gross_yield_pct"];
+          const excludeZero = zeroMeansNoData.includes(metric);
+
           const values = data.features
             .map((f: Feature) => (f.properties as ZoneProperties)?.metric_value ?? (f.properties as ZoneProperties)?.value_mid_eur_sqm)
-            .filter((v: unknown): v is number => typeof v === "number" && Number.isFinite(v));
+            .filter((v: unknown): v is number => typeof v === "number" && Number.isFinite(v) && (!excludeZero || v !== 0));
 
           if (values.length > 0) {
             setValueDomain({
@@ -245,6 +248,13 @@ export function ZoneLayer({ municipalityId, visible, metric = "value_mid_eur_sqm
 
       // No value data - show neutral gray
       if (value == null || !Number.isFinite(value)) {
+        return NO_DATA_COLOR;
+      }
+
+      // Treat 0 as "no data" for metrics where 0 is not a valid value
+      // (e.g., earthquake-devastated areas where OMI reports €0/sqm)
+      const zeroMeansNoData = ["value_mid_eur_sqm", "rent_mid_eur_sqm_month", "gross_yield_pct"];
+      if (value === 0 && zeroMeansNoData.includes(metric)) {
         return NO_DATA_COLOR;
       }
 
@@ -369,8 +379,7 @@ export function ZoneLayer({ municipalityId, visible, metric = "value_mid_eur_sqm
       layer.bindTooltip(tooltipContent, {
         sticky: true,
         className: "zone-tooltip",
-        direction: "top",
-        offset: [0, -10],
+        direction: "auto",
       });
 
       layer.on({
@@ -494,22 +503,22 @@ export function ZoneLayer({ municipalityId, visible, metric = "value_mid_eur_sqm
 
         .zone-label__code {
           font-family: monospace;
-          font-size: 0.75rem;
-          font-weight: 700;
+          font-size: 0.6rem;
+          font-weight: 500;
           color: #fff;
           background: rgba(196, 120, 92, 0.85);
-          padding: 2px 6px;
-          border-radius: 4px;
+          padding: 1px 4px;
+          border-radius: 3px;
           white-space: nowrap;
         }
 
         .zone-label__name {
           font-family: "DM Sans", -apple-system, sans-serif;
-          font-size: 0.7rem;
-          font-weight: 500;
+          font-size: 0.55rem;
+          font-weight: 400;
           color: #f0f2f5;
           white-space: nowrap;
-          max-width: 120px;
+          max-width: 100px;
           overflow: hidden;
           text-overflow: ellipsis;
         }
