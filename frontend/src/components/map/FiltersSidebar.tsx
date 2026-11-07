@@ -55,6 +55,18 @@ const METRICS: { value: MetricType; label: string; icon: string; description: st
     description: "Median price per m²",
   },
   {
+    value: "value_pct_change",
+    label: "Value Change",
+    icon: "△",
+    description: "Price trend over time",
+  },
+  {
+    value: "price_variance_pct",
+    label: "Price Spread",
+    icon: "↔",
+    description: "Min to max range",
+  },
+  {
     value: "rent_mid_eur_sqm_month",
     label: "Monthly Rent",
     icon: "⌂",
@@ -65,12 +77,6 @@ const METRICS: { value: MetricType; label: string; icon: string; description: st
     label: "Gross Yield",
     icon: "◎",
     description: "Annual rent / price",
-  },
-  {
-    value: "price_variance_pct",
-    label: "Price Spread",
-    icon: "↔",
-    description: "Min to max range",
   },
   {
     value: "forecast_appreciation_pct",
@@ -111,12 +117,6 @@ const METRICS: { value: MetricType; label: string; icon: string; description: st
     label: "Population Trend",
     icon: "📈",
     description: "Annual change (%)",
-  },
-  {
-    value: "value_pct_change",
-    label: "Value Change",
-    icon: "△",
-    description: "Price trend over time",
   },
 ];
 
