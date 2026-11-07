@@ -109,143 +109,137 @@ export async function GET(request: Request, { params }: RouteParams) {
     );
   }
 
-  // 2. Fetch region and province names
-  const [{ data: region }, { data: province }] = await Promise.all([
+  // 2. Fetch all data in parallel for speed
+  const provinceCode = municipalityData.province_code;
+
+  const [
+    { data: region },
+    { data: province },
+    { data: latestForecast },
+    { data: historicalValues },
+    { data: historicalTransactions },
+    { data: demographics },
+    { data: neighbors },
+    { data: strData },
+    { data: strSeasonality },
+    { data: regulations },
+  ] = await Promise.all([
+    // Region name
     supabase
       .schema("core")
       .from("regions")
       .select("region_name")
       .eq("region_code", municipalityData.region_code)
       .single(),
+    // Province name
     supabase
       .schema("core")
       .from("provinces")
       .select("province_name")
       .eq("province_code", municipalityData.province_code)
       .single(),
+    // Latest forecast
+    supabase
+      .schema("model")
+      .from("forecasts_municipality")
+      .select(
+        `forecast_date, horizon_months, value_mid_eur_sqm, forecast_appreciation_pct,
+         forecast_gross_yield_pct, opportunity_score, confidence_score, drivers, risks, model_version`
+      )
+      .eq("municipality_id", istatCode)
+      .eq("property_segment", segment)
+      .eq("horizon_months", horizonMonths)
+      .eq("publishable_flag", true)
+      .order("forecast_date", { ascending: false })
+      .limit(1)
+      .single(),
+    // Historical values
+    supabase
+      .schema("mart")
+      .from("municipality_values_semester")
+      .select(
+        `period_id, value_mid_eur_sqm, value_min_eur_sqm, value_max_eur_sqm,
+         rent_mid_eur_sqm_month, value_pct_change_1s, zones_with_data`
+      )
+      .eq("municipality_id", istatCode)
+      .eq("property_segment", segment)
+      .order("period_id", { ascending: false }),
+    // Historical transactions
+    supabase
+      .schema("mart")
+      .from("municipality_transactions_semester")
+      .select(`period_id, ntn_total, ntn_per_1000_pop, absorption_rate`)
+      .eq("municipality_id", istatCode)
+      .eq("property_segment", segment)
+      .order("period_id", { ascending: false })
+      .limit(8),
+    // Demographics
+    supabase
+      .schema("mart")
+      .from("municipality_demographics_year")
+      .select(
+        `reference_year, total_population, population_density, young_ratio,
+         working_ratio, elderly_ratio, foreign_ratio, population_growth_rate, dependency_ratio`
+      )
+      .eq("municipality_id", istatCode)
+      .order("reference_year", { ascending: false })
+      .limit(1)
+      .single(),
+    // Neighbors
+    supabase
+      .schema("core")
+      .from("municipality_neighbors")
+      .select(`neighbor_id, shared_border_km`)
+      .eq("municipality_id", istatCode)
+      .order("shared_border_km", { ascending: false })
+      .limit(10),
+    // STR data
+    supabase
+      .schema("mart")
+      .from("municipality_str_month")
+      .select(
+        `period_id, adr_eur, occupancy_rate, rev_par_eur, monthly_revenue_avg_eur,
+         annual_revenue_estimate_eur, active_listings_count, seasonality_factor,
+         is_peak_season, str_gross_yield_pct, str_net_yield_pct`
+      )
+      .eq("municipality_id", istatCode)
+      .order("period_id", { ascending: false })
+      .limit(12),
+    // STR seasonality
+    supabase
+      .schema("mart")
+      .from("municipality_str_seasonality")
+      .select(
+        `reference_year, annual_avg_adr_eur, annual_avg_occupancy, annual_avg_rev_par_eur,
+         total_annual_revenue_estimate_eur, seasonality_score, peak_months, shoulder_months,
+         off_peak_months, peak_to_offpeak_adr_ratio, monthly_adr_profile, monthly_occupancy_profile`
+      )
+      .eq("municipality_id", istatCode)
+      .order("reference_year", { ascending: false })
+      .limit(1)
+      .single(),
+    // Regulations
+    supabase
+      .schema("mart")
+      .from("municipality_regulations")
+      .select(
+        `regulation_risk_score, regulation_risk_level, str_regulation_score, heritage_score,
+         str_license_required, str_max_days_per_year, str_new_permits_allowed, str_zones_restricted,
+         has_heritage_zones, has_rent_control, active_regulations_count, risk_factors,
+         investor_warning_level, investor_notes`
+      )
+      .eq("municipality_id", istatCode)
+      .single(),
   ]);
 
-  // 3. Fetch latest forecast
-  const { data: latestForecast } = await supabase
-    .schema("model")
-    .from("forecasts_municipality")
-    .select(
-      `
-      forecast_date,
-      horizon_months,
-      value_mid_eur_sqm,
-      forecast_appreciation_pct,
-      forecast_gross_yield_pct,
-      opportunity_score,
-      confidence_score,
-      drivers,
-      risks,
-      model_version
-    `
-    )
-    .eq("municipality_id", istatCode)
-    .eq("property_segment", segment)
-    .eq("horizon_months", horizonMonths)
-    .eq("publishable_flag", true)
-    .order("forecast_date", { ascending: false })
-    .limit(1)
-    .single();
-
-  // 4. Fetch all historical values (no limit - show full history back to 2016)
-  const { data: historicalValues } = await supabase
-    .schema("mart")
-    .from("municipality_values_semester")
-    .select(
-      `
-      period_id,
-      value_mid_eur_sqm,
-      value_min_eur_sqm,
-      value_max_eur_sqm,
-      rent_mid_eur_sqm_month,
-      value_pct_change_1s,
-      zones_with_data
-    `
-    )
-    .eq("municipality_id", istatCode)
-    .eq("property_segment", segment)
-    .order("period_id", { ascending: false });
-
-  // 5. Fetch historical transactions (municipal level)
-  const { data: historicalTransactions } = await supabase
-    .schema("mart")
-    .from("municipality_transactions_semester")
-    .select(
-      `
-      period_id,
-      ntn_total,
-      ntn_per_1000_pop,
-      absorption_rate
-    `
-    )
-    .eq("municipality_id", istatCode)
-    .eq("property_segment", segment)
-    .order("period_id", { ascending: false })
-    .limit(8);
-
-  // 5b. Fallback: Fetch provincial transactions if no municipal data
-  // Provincial data shows capoluogo vs non-capoluogo transactions
-  const provinceCode = municipalityData.province_code;
+  // Fetch provincial transactions only if no municipal data (conditional query)
   let provincialTransactions: Array<{
     period_id: string;
     ntn_total: number;
     is_capoluogo: boolean;
   }> | null = null;
 
-  if (!historicalTransactions || historicalTransactions.length === 0) {
-    const { data: provTx } = await supabase
-      .schema("mart")
-      .from("province_transactions_semester")
-      .select("period_id, ntn_total, is_capoluogo")
-      .eq("province_code", provinceCode)
-      .eq("property_segment", segment)
-      .order("period_id", { ascending: false })
-      .limit(16); // Get both capoluogo and non-capoluogo for 8 periods
-
-    provincialTransactions = provTx;
-  }
-
-  // 6. Fetch latest demographics
-  const { data: demographics } = await supabase
-    .schema("mart")
-    .from("municipality_demographics_year")
-    .select(
-      `
-      reference_year,
-      total_population,
-      population_density,
-      young_ratio,
-      working_ratio,
-      elderly_ratio,
-      foreign_ratio,
-      population_growth_rate,
-      dependency_ratio
-    `
-    )
-    .eq("municipality_id", istatCode)
-    .order("reference_year", { ascending: false })
-    .limit(1)
-    .single();
-
-  // 7. Fetch neighboring municipalities
-  const { data: neighbors } = await supabase
-    .schema("core")
-    .from("municipality_neighbors")
-    .select(
-      `
-      neighbor_id,
-      shared_border_km
-    `
-    )
-    .eq("municipality_id", istatCode)
-    .order("shared_border_km", { ascending: false })
-    .limit(10);
-
-  // If we have neighbors, get their names and values
+  // Fetch neighbor details only if we have neighbors (conditional queries in parallel)
   let neighborDetails: Array<{
     municipalityId: string;
     name: string;
@@ -253,117 +247,62 @@ export async function GET(request: Request, { params }: RouteParams) {
     valueMidEurSqm: number | null;
   }> = [];
 
-  if (neighbors && neighbors.length > 0) {
-    const neighborIds = neighbors.map((n) => n.neighbor_id);
+  // Run conditional queries in parallel
+  const conditionalPromises: Promise<void>[] = [];
 
-    const { data: neighborMunis } = await supabase
-      .schema("core")
-      .from("municipalities")
-      .select("municipality_id, municipality_name")
-      .in("municipality_id", neighborIds);
-
-    // Get latest values for neighbors
-    const { data: neighborValues } = await supabase
-      .schema("mart")
-      .from("municipality_values_semester")
-      .select("municipality_id, value_mid_eur_sqm, period_id")
-      .in("municipality_id", neighborIds)
-      .eq("property_segment", segment)
-      .order("period_id", { ascending: false });
-
-    // Create lookup maps
-    const nameMap = new Map(
-      (neighborMunis ?? []).map((m) => [m.municipality_id, m.municipality_name])
+  if (!historicalTransactions || historicalTransactions.length === 0) {
+    conditionalPromises.push(
+      supabase
+        .schema("mart")
+        .from("province_transactions_semester")
+        .select("period_id, ntn_total, is_capoluogo")
+        .eq("province_code", provinceCode)
+        .eq("property_segment", segment)
+        .order("period_id", { ascending: false })
+        .limit(16)
+        .then(({ data }) => {
+          provincialTransactions = data;
+        })
     );
-
-    // Get latest value per municipality
-    const valueMap = new Map<string, number>();
-    for (const v of neighborValues ?? []) {
-      if (!valueMap.has(v.municipality_id)) {
-        valueMap.set(v.municipality_id, v.value_mid_eur_sqm);
-      }
-    }
-
-    neighborDetails = neighbors.map((n) => ({
-      municipalityId: n.neighbor_id,
-      name: nameMap.get(n.neighbor_id) ?? n.neighbor_id,
-      sharedBorderKm: n.shared_border_km,
-      valueMidEurSqm: valueMap.get(n.neighbor_id) ?? null,
-    }));
   }
 
-  // 8. Fetch latest STR data
-  const { data: strData } = await supabase
-    .schema("mart")
-    .from("municipality_str_month")
-    .select(
-      `
-      period_id,
-      adr_eur,
-      occupancy_rate,
-      rev_par_eur,
-      monthly_revenue_avg_eur,
-      annual_revenue_estimate_eur,
-      active_listings_count,
-      seasonality_factor,
-      is_peak_season,
-      str_gross_yield_pct,
-      str_net_yield_pct
-    `
-    )
-    .eq("municipality_id", istatCode)
-    .order("period_id", { ascending: false })
-    .limit(12);
+  if (neighbors && neighbors.length > 0) {
+    const neighborIds = neighbors.map((n) => n.neighbor_id);
+    conditionalPromises.push(
+      Promise.all([
+        supabase
+          .schema("core")
+          .from("municipalities")
+          .select("municipality_id, municipality_name")
+          .in("municipality_id", neighborIds),
+        supabase
+          .schema("mart")
+          .from("municipality_values_semester")
+          .select("municipality_id, value_mid_eur_sqm, period_id")
+          .in("municipality_id", neighborIds)
+          .eq("property_segment", segment)
+          .order("period_id", { ascending: false }),
+      ]).then(([{ data: neighborMunis }, { data: neighborValues }]) => {
+        const nameMap = new Map(
+          (neighborMunis ?? []).map((m) => [m.municipality_id, m.municipality_name])
+        );
+        const valueMap = new Map<string, number>();
+        for (const v of neighborValues ?? []) {
+          if (!valueMap.has(v.municipality_id)) {
+            valueMap.set(v.municipality_id, v.value_mid_eur_sqm);
+          }
+        }
+        neighborDetails = neighbors.map((n) => ({
+          municipalityId: n.neighbor_id,
+          name: nameMap.get(n.neighbor_id) ?? n.neighbor_id,
+          sharedBorderKm: n.shared_border_km,
+          valueMidEurSqm: valueMap.get(n.neighbor_id) ?? null,
+        }));
+      })
+    );
+  }
 
-  // 9. Fetch STR seasonality profile
-  const { data: strSeasonality } = await supabase
-    .schema("mart")
-    .from("municipality_str_seasonality")
-    .select(
-      `
-      reference_year,
-      annual_avg_adr_eur,
-      annual_avg_occupancy,
-      annual_avg_rev_par_eur,
-      total_annual_revenue_estimate_eur,
-      seasonality_score,
-      peak_months,
-      shoulder_months,
-      off_peak_months,
-      peak_to_offpeak_adr_ratio,
-      monthly_adr_profile,
-      monthly_occupancy_profile
-    `
-    )
-    .eq("municipality_id", istatCode)
-    .order("reference_year", { ascending: false })
-    .limit(1)
-    .single();
-
-  // 10. Fetch regulation data
-  const { data: regulations } = await supabase
-    .schema("mart")
-    .from("municipality_regulations")
-    .select(
-      `
-      regulation_risk_score,
-      regulation_risk_level,
-      str_regulation_score,
-      heritage_score,
-      str_license_required,
-      str_max_days_per_year,
-      str_new_permits_allowed,
-      str_zones_restricted,
-      has_heritage_zones,
-      has_rent_control,
-      active_regulations_count,
-      risk_factors,
-      investor_warning_level,
-      investor_notes
-    `
-    )
-    .eq("municipality_id", istatCode)
-    .single();
+  await Promise.all(conditionalPromises);
 
   // 11. Calculate derived metrics and fallback forecasts
 
@@ -658,6 +597,11 @@ export async function GET(request: Request, { params }: RouteParams) {
       priceTrend,
       currentValue,
       projectedValue,
+    },
+  }, {
+    headers: {
+      // Cache for 5 minutes, allow stale for 1 hour while revalidating
+      "Cache-Control": "public, max-age=300, stale-while-revalidate=3600",
     },
   });
 }
