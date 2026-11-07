@@ -76,8 +76,8 @@ type SortField =
 
 const SORT_OPTIONS: { value: SortField; label: string }[] = [
   { value: "value_mid_eur_sqm", label: "Property Value" },
-  { value: "gross_yield_pct", label: "Gross Yield" },
   { value: "annualized_price_change_pct", label: "Price Change" },
+  { value: "gross_yield_pct", label: "Gross Yield" },
   { value: "ntn_per_1000_pop", label: "Sales Activity" },
   { value: "opportunity_score", label: "Opportunity" },
 ];
