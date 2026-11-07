@@ -596,6 +596,10 @@ export default function RankingsPage() {
                   onClick={() => {
                     setSemestersToAverage(option.value);
                     setPage(0);
+                    // Reset sort if switching to 1 semester while sorted by change
+                    if (option.value === 1 && sortBy === "annualized_price_change_pct") {
+                      setSortBy("value_mid_eur_sqm");
+                    }
                   }}
                   className={`filters__pill ${semestersToAverage === option.value ? "filters__pill--active" : ""}`}
                 >
@@ -682,12 +686,12 @@ export default function RankingsPage() {
                       {sortBy === "value_mid_eur_sqm" && <span className="sort-arrow">{sortOrder === "desc" ? "↓" : "↑"}</span>}
                     </th>
                     <th
-                      className={`table__th table__th--sortable ${sortBy === "annualized_price_change_pct" ? "table__th--sorted" : ""}`}
-                      onClick={() => handleSort("annualized_price_change_pct")}
-                      title="Annualized price change vs. previous semester"
+                      className={`table__th ${semestersToAverage > 1 ? "table__th--sortable" : "table__th--disabled"} ${sortBy === "annualized_price_change_pct" ? "table__th--sorted" : ""}`}
+                      onClick={() => semestersToAverage > 1 && handleSort("annualized_price_change_pct")}
+                      title={semestersToAverage > 1 ? "Annualized price change vs. previous semester" : "Select a longer data period to see price changes"}
                     >
                       Change
-                      {sortBy === "annualized_price_change_pct" && <span className="sort-arrow">{sortOrder === "desc" ? "↓" : "↑"}</span>}
+                      {sortBy === "annualized_price_change_pct" && semestersToAverage > 1 && <span className="sort-arrow">{sortOrder === "desc" ? "↓" : "↑"}</span>}
                     </th>
                     <th
                       className={`table__th table__th--sortable ${sortBy === "gross_yield_pct" ? "table__th--sorted" : ""}`}
@@ -762,9 +766,9 @@ export default function RankingsPage() {
                           {formatCurrency(r.valueMidEurSqm)}
                           <span className="table__unit">/m²</span>
                         </td>
-                        <td className="table__td table__td--percent">
-                          <span className={`percent-value ${(r.annualizedPriceChangePct ?? 0) >= 0 ? "positive" : "negative"}`}>
-                            {formatPercent(r.annualizedPriceChangePct)}
+                        <td className={`table__td table__td--percent ${semestersToAverage === 1 ? "table__td--disabled" : ""}`}>
+                          <span className={`percent-value ${semestersToAverage === 1 ? "disabled" : (r.annualizedPriceChangePct ?? 0) >= 0 ? "positive" : "negative"}`}>
+                            {semestersToAverage === 1 ? "—" : formatPercent(r.annualizedPriceChangePct)}
                           </span>
                         </td>
                         <td className="table__td table__td--percent">
@@ -1439,6 +1443,19 @@ export default function RankingsPage() {
 
         .table__th--sorted {
           color: #c4785c;
+        }
+
+        .table__th--disabled {
+          color: #4a5568;
+          cursor: not-allowed;
+        }
+
+        .table__td--disabled {
+          opacity: 0.4;
+        }
+
+        .percent-value.disabled {
+          color: #4a5568;
         }
 
         .sort-arrow {
