@@ -24,7 +24,7 @@ const METRIC_CONFIG: Record<
     label: "Property Value",
     unit: "€/m²",
     format: (v) => `€${Math.round(v).toLocaleString()}`,
-    colors: ["#1e3a5f", "#2d5a87", "#4a90b5", "#7cc4d4", "#b8e0ec"],
+    colors: ["#071525", "#1a3a5c", "#3d7a9e", "#6db8d6", "#b8e0ec"],
   },
   rent_mid_eur_sqm_month: {
     label: "Monthly Rent",

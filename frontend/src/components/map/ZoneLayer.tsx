@@ -32,11 +32,11 @@ const ZONE_LABEL_ZOOM = 11;
 // Color scales for different metrics (matching MapInner.tsx)
 const COLOR_SCALES: Record<string, number[][]> = {
   value_mid_eur_sqm: [
-    [30, 58, 95],    // Deep Mediterranean blue
-    [45, 90, 135],
-    [74, 144, 181],
-    [124, 196, 212],
-    [184, 224, 236],
+    [7, 21, 37],     // Very dark navy (low values)
+    [26, 58, 92],
+    [61, 122, 158],
+    [109, 184, 214],
+    [184, 224, 236], // Light cyan (high values)
   ],
   rent_mid_eur_sqm_month: [
     [240, 249, 232],  // Light green (low rent)

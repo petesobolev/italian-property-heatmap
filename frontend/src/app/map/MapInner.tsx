@@ -49,11 +49,11 @@ const FLAT_TAX_ELIGIBLE_REGIONS = new Set([
 const COLOR_SCALES: Record<MetricType, { stops: number[][]; noData: string; fixedRange?: { min: number; max: number } }> = {
   value_mid_eur_sqm: {
     stops: [
-      [30, 58, 95],    // Deep Mediterranean blue
-      [45, 90, 135],
-      [74, 144, 181],
-      [124, 196, 212],
-      [184, 224, 236],
+      [7, 21, 37],     // Very dark navy (low values)
+      [26, 58, 92],
+      [61, 122, 158],
+      [109, 184, 214],
+      [184, 224, 236], // Light cyan (high values)
     ],
     noData: "#2a2d35",
   },
