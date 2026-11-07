@@ -341,6 +341,44 @@ export function FiltersSidebar({
           </div>
         )}
 
+        {/* Data Averaging Period */}
+        <div className="filters-section">
+          <label className="filters-section__label">
+            <span className="filters-section__label-text">Data Averaging Period</span>
+            <span className="filters-section__label-value">
+              {filters.semestersToAverage === 1
+                ? "No averaging"
+                : `${filters.semestersToAverage * 6}mo avg`}
+            </span>
+          </label>
+          <div className="semester-buttons">
+            {[
+              { semesters: 1, label: "Latest" },
+              { semesters: 2, label: "12mo" },
+              { semesters: 3, label: "18mo" },
+              { semesters: 4, label: "24mo" },
+            ]
+              .filter(({ semesters }) => semesters <= availablePeriodsCount)
+              .map(({ semesters, label }) => (
+              <button
+                key={semesters}
+                onClick={() => handleSemestersChange(semesters)}
+                className={`semester-btn ${filters.semestersToAverage === semesters ? "semester-btn--active" : ""}`}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          <p className="semester-hint">
+            Averaging more months improves accuracy for low-volume areas
+          </p>
+          {latestPeriod && (
+            <p className="data-latest">
+              Data through {formatPeriod(latestPeriod)}
+            </p>
+          )}
+        </div>
+
         {/* Property Segment */}
         <div className="filters-section">
           <label className="filters-section__label">
@@ -414,44 +452,6 @@ export function FiltersSidebar({
               </svg>
             </span>
           </div>
-        </div>
-
-        {/* Semesters to Average */}
-        <div className="filters-section">
-          <label className="filters-section__label">
-            <span className="filters-section__label-text">Data Period</span>
-            <span className="filters-section__label-value">
-              {filters.semestersToAverage === 1
-                ? "Latest (6mo)"
-                : `${filters.semestersToAverage * 6}mo avg`}
-            </span>
-          </label>
-          <div className="semester-buttons">
-            {[
-              { semesters: 1, label: "Latest" },
-              { semesters: 2, label: "12mo" },
-              { semesters: 3, label: "18mo" },
-              { semesters: 4, label: "24mo" },
-            ]
-              .filter(({ semesters }) => semesters <= availablePeriodsCount)
-              .map(({ semesters, label }) => (
-              <button
-                key={semesters}
-                onClick={() => handleSemestersChange(semesters)}
-                className={`semester-btn ${filters.semestersToAverage === semesters ? "semester-btn--active" : ""}`}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-          <p className="semester-hint">
-            Averaging more months improves accuracy for low-volume areas
-          </p>
-          {latestPeriod && (
-            <p className="data-latest">
-              Data through {formatPeriod(latestPeriod)}
-            </p>
-          )}
         </div>
 
         {/* Tax Regime Overlay */}
