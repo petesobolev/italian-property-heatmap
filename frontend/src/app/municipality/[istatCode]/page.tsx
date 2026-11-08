@@ -748,6 +748,20 @@ export default function MunicipalityDetailPage({
             </span>
             <span className="hero__metric-label">Gross Yield</span>
           </div>
+          <div className="hero__chart" style={{ animationDelay: "300ms" }}>
+            <span className="hero__chart-title">Price History</span>
+            {priceHistory.length > 1 ? (
+              <MiniChart
+                data={priceHistory}
+                labels={priceHistoryLabels}
+                color="#c4785c"
+                height={120}
+                showAxes={true}
+              />
+            ) : (
+              <span className="hero__chart-empty">No data</span>
+            )}
+          </div>
         </div>
       </header>
 
@@ -784,20 +798,6 @@ export default function MunicipalityDetailPage({
                 <span className="value-card__sub">
                   12M forecast: {formatPercent(f.appreciationPct)}
                 </span>
-              )}
-            </div>
-            <div className="chart-card chart-card--with-axes">
-              <span className="chart-card__title">Price History</span>
-              {priceHistory.length > 1 ? (
-                <MiniChart
-                  data={priceHistory}
-                  labels={priceHistoryLabels}
-                  color="#c4785c"
-                  height={140}
-                  showAxes={true}
-                />
-              ) : (
-                <div className="chart-card__empty">Insufficient data</div>
               )}
             </div>
           </div>
@@ -1482,6 +1482,32 @@ export default function MunicipalityDetailPage({
           color: #6b7a90;
           text-transform: uppercase;
           letter-spacing: 0.1em;
+        }
+
+        .hero__chart {
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          padding: 16px 20px;
+          background: rgba(255, 255, 255, 0.03);
+          border: 1px solid rgba(255, 255, 255, 0.06);
+          border-radius: 12px;
+          min-width: 280px;
+          opacity: 0;
+          animation: fadeInUp 0.6s ease forwards;
+        }
+
+        .hero__chart-title {
+          font-size: 0.65rem;
+          color: #6b7a90;
+          text-transform: uppercase;
+          letter-spacing: 0.1em;
+          margin-bottom: 8px;
+        }
+
+        .hero__chart-empty {
+          font-size: 0.75rem;
+          color: #4a5568;
         }
 
         /* Main Content */
