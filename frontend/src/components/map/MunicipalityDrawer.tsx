@@ -15,6 +15,11 @@ export interface MunicipalityData {
   valueMidEurSqm?: number;
   valueMinEurSqm?: number;
   valueMaxEurSqm?: number;
+  // Historical values for chart
+  historicalValues?: Array<{
+    periodId: string;
+    valueMidEurSqm: number | null;
+  }>;
   // Forecasts
   forecastAppreciationPct?: number;
   forecastGrossYieldPct?: number;
@@ -230,6 +235,54 @@ function StatCard({
   );
 }
 
+function Sparkline({
+  data,
+  color = "#c4785c",
+  height = 60,
+}: {
+  data: number[];
+  color?: string;
+  height?: number;
+}) {
+  if (data.length < 2) return null;
+
+  const width = 120;
+  const padding = 4;
+  const max = Math.max(...data);
+  const min = Math.min(...data);
+  const range = max - min || 1;
+
+  const points = data.map((value, i) => {
+    const x = padding + (i / (data.length - 1)) * (width - padding * 2);
+    const y = padding + (height - padding * 2) - ((value - min) / range) * (height - padding * 2);
+    return `${x},${y}`;
+  });
+
+  const pathD = `M ${points.join(" L ")}`;
+  const areaD = `${pathD} L ${width - padding},${height - padding} L ${padding},${height - padding} Z`;
+  const gradientId = `sparkline-${Math.random().toString(36).substr(2, 9)}`;
+
+  return (
+    <svg viewBox={`0 0 ${width} ${height}`} className="sparkline">
+      <defs>
+        <linearGradient id={gradientId} x1="0%" y1="0%" x2="0%" y2="100%">
+          <stop offset="0%" stopColor={color} stopOpacity="0.25" />
+          <stop offset="100%" stopColor={color} stopOpacity="0" />
+        </linearGradient>
+      </defs>
+      <path d={areaD} fill={`url(#${gradientId})`} />
+      <path d={pathD} fill="none" stroke={color} strokeWidth="1.5" strokeLinecap="round" />
+      <circle cx={points[points.length - 1].split(",")[0]} cy={points[points.length - 1].split(",")[1]} r="3" fill={color} />
+      <style jsx>{`
+        .sparkline {
+          width: 100%;
+          height: ${height}px;
+        }
+      `}</style>
+    </svg>
+  );
+}
+
 export function MunicipalityDrawer({
   municipality,
   isOpen,
@@ -317,19 +370,34 @@ export function MunicipalityDrawer({
                   <span className="drawer__section-icon">€</span>
                   Property Values
                 </h3>
-                <div className="drawer__stats-grid">
-                  <StatCard
-                    label="Median Value"
-                    value={formatCurrency(m.valueMidEurSqm)}
-                    subValue="per m²"
-                    icon="◈"
-                  />
-                  <StatCard
-                    label="Range"
-                    value={`${formatCurrency(m.valueMinEurSqm)} – ${formatCurrency(m.valueMaxEurSqm)}`}
-                    subValue="min – max"
-                    icon="↔"
-                  />
+                <div className="drawer__values-row">
+                  <div className="drawer__values-stats">
+                    <StatCard
+                      label="Median Value"
+                      value={formatCurrency(m.valueMidEurSqm)}
+                      subValue="per m²"
+                      icon="◈"
+                    />
+                    <StatCard
+                      label="Range"
+                      value={`${formatCurrency(m.valueMinEurSqm)} – ${formatCurrency(m.valueMaxEurSqm)}`}
+                      subValue="min – max"
+                      icon="↔"
+                    />
+                  </div>
+                  {m.historicalValues && m.historicalValues.length > 1 && (
+                    <div className="drawer__sparkline-card">
+                      <span className="drawer__sparkline-label">Price History</span>
+                      <Sparkline
+                        data={[...m.historicalValues]
+                          .reverse()
+                          .map(v => v.valueMidEurSqm)
+                          .filter((v): v is number => v != null)}
+                        color="#c4785c"
+                        height={56}
+                      />
+                    </div>
+                  )}
                 </div>
               </section>
 
@@ -707,6 +775,39 @@ export function MunicipalityDrawer({
 
         .drawer__stats-grid--3col {
           grid-template-columns: repeat(3, 1fr);
+        }
+
+        .drawer__values-row {
+          display: flex;
+          gap: 12px;
+          align-items: stretch;
+        }
+
+        .drawer__values-stats {
+          flex: 1;
+          display: flex;
+          flex-direction: column;
+          gap: 10px;
+        }
+
+        .drawer__sparkline-card {
+          width: 130px;
+          display: flex;
+          flex-direction: column;
+          justify-content: center;
+          padding: 10px 12px;
+          background: rgba(255, 255, 255, 0.02);
+          border: 1px solid rgba(255, 255, 255, 0.04);
+          border-radius: 10px;
+        }
+
+        .drawer__sparkline-label {
+          font-size: 0.6rem;
+          text-transform: uppercase;
+          letter-spacing: 0.08em;
+          color: #6b7a90;
+          margin-bottom: 6px;
+          text-align: center;
         }
 
         .drawer__foreign-bar {

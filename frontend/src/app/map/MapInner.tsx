@@ -1087,6 +1087,11 @@ export function MapInner() {
           valueMidEurSqm: data.historicalValues?.[0]?.valueMidEurSqm ?? mapValue,
           valueMinEurSqm: data.historicalValues?.[0]?.valueMinEurSqm,
           valueMaxEurSqm: data.historicalValues?.[0]?.valueMaxEurSqm,
+          // Historical values for sparkline chart
+          historicalValues: data.historicalValues?.map((v: { periodId: string; valueMidEurSqm: number | null }) => ({
+            periodId: v.periodId,
+            valueMidEurSqm: v.valueMidEurSqm,
+          })),
           // Forecasts
           forecastAppreciationPct: data.forecast?.appreciationPct,
           forecastGrossYieldPct: data.forecast?.grossYieldPct,
@@ -1159,6 +1164,11 @@ export function MapInner() {
           valueMidEurSqm: data.historicalValues?.[0]?.valueMidEurSqm ?? mapValue,
           valueMinEurSqm: data.historicalValues?.[0]?.valueMinEurSqm,
           valueMaxEurSqm: data.historicalValues?.[0]?.valueMaxEurSqm,
+          // Historical values for sparkline chart
+          historicalValues: data.historicalValues?.map((v: { periodId: string; valueMidEurSqm: number | null }) => ({
+            periodId: v.periodId,
+            valueMidEurSqm: v.valueMidEurSqm,
+          })),
           forecastAppreciationPct: data.forecast?.appreciationPct,
           forecastGrossYieldPct: data.forecast?.grossYieldPct,
           opportunityScore: data.forecast?.opportunityScore,
