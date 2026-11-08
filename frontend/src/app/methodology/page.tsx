@@ -131,14 +131,31 @@ export default function MethodologyPage() {
             </div>
 
             <div className="card">
-              <h3 className="card__title">Condition Premium (%)</h3>
+              <h3 className="card__title">Opportunity Score (0-100)</h3>
               <p className="card__text">
-                The price premium for properties in "ottimo" (excellent) condition versus
-                "normale" (standard) condition. Higher premiums may indicate markets where
-                renovations are valued or where housing stock quality varies significantly.
+                A composite score that combines multiple factors to identify investment opportunities.
+                Higher scores indicate municipalities with favorable combinations of appreciation
+                potential, rental yield, data confidence, and lower risk factors.
               </p>
+              <p className="card__text">
+                <strong>Component weights (balanced strategy):</strong>
+              </p>
+              <ul className="card__list">
+                <li><strong>Appreciation Forecast (35%)</strong> — Predicted 12-month price change</li>
+                <li><strong>Gross Yield (30%)</strong> — Annual rental income relative to price</li>
+                <li><strong>Data Confidence (20%)</strong> — Reliability of underlying data</li>
+                <li><strong>Risk Penalty (15%)</strong> — Deduction for risk factors</li>
+              </ul>
+              <p className="card__text">
+                <strong>Risk factors that reduce scores:</strong>
+              </p>
+              <ul className="card__list">
+                <li>High price volatility over recent periods</li>
+                <li>High elderly population ratio (demographic decline risk)</li>
+                <li>Negative population growth trends</li>
+              </ul>
               <div className="formula">
-                <code>Premium = ((Ottimo Price - Normale Price) / Normale Price) × 100</code>
+                <code>Score = 0.35×Appreciation + 0.30×Yield + 0.20×Confidence − 0.15×Risk</code>
               </div>
             </div>
 
