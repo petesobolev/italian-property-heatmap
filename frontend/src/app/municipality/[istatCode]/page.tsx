@@ -679,14 +679,14 @@ export default function MunicipalityDetailPage({
   const valueMax = latestHistorical?.valueMaxEurSqm ?? null;
 
   // Prepare chart data (reverse to show oldest first)
-  // Prepare chart data (reverse to show oldest first)
+  // Filter to only include periods with complete zone data
+  const maxZones = Math.max(...historicalValues.map(v => v.zonesWithData ?? 0));
   const reversedHistoricalValues = [...historicalValues].reverse();
-  const priceHistory = reversedHistoricalValues
-    .map((v) => v.valueMidEurSqm)
-    .filter((v): v is number => v != null);
-  const priceHistoryLabels = reversedHistoricalValues
-    .filter((v) => v.valueMidEurSqm != null)
-    .map((v) => v.periodId);
+  const completeHistoricalValues = reversedHistoricalValues.filter(
+    v => v.valueMidEurSqm != null && (maxZones <= 1 || v.zonesWithData === maxZones)
+  );
+  const priceHistory = completeHistoricalValues.map(v => v.valueMidEurSqm as number);
+  const priceHistoryLabels = completeHistoricalValues.map(v => v.periodId);
 
   return (
     <div className="municipality-page">

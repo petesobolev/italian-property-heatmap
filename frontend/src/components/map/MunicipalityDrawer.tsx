@@ -19,6 +19,7 @@ export interface MunicipalityData {
   historicalValues?: Array<{
     periodId: string;
     valueMidEurSqm: number | null;
+    zonesWithData?: number | null;
   }>;
   // Forecasts
   forecastAppreciationPct?: number;
@@ -385,19 +386,24 @@ export function MunicipalityDrawer({
                       icon="↔"
                     />
                   </div>
-                  {m.historicalValues && m.historicalValues.length > 1 && (
-                    <div className="drawer__sparkline-card">
-                      <span className="drawer__sparkline-label">Price History</span>
-                      <Sparkline
-                        data={[...m.historicalValues]
-                          .reverse()
-                          .map(v => v.valueMidEurSqm)
-                          .filter((v): v is number => v != null)}
-                        color="#c4785c"
-                        height={56}
-                      />
-                    </div>
-                  )}
+                  {m.historicalValues && m.historicalValues.length > 1 && (() => {
+                    // Filter to only include periods with complete zone data
+                    const maxZones = Math.max(...m.historicalValues.map(v => v.zonesWithData ?? 0));
+                    const completeData = [...m.historicalValues]
+                      .reverse()
+                      .filter(v => v.valueMidEurSqm != null && (maxZones <= 1 || v.zonesWithData === maxZones))
+                      .map(v => v.valueMidEurSqm as number);
+                    return completeData.length > 1 ? (
+                      <div className="drawer__sparkline-card">
+                        <span className="drawer__sparkline-label">Price History</span>
+                        <Sparkline
+                          data={completeData}
+                          color="#c4785c"
+                          height={56}
+                        />
+                      </div>
+                    ) : null;
+                  })()}
                 </div>
               </section>
 

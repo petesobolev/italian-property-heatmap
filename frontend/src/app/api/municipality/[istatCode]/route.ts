@@ -252,37 +252,38 @@ export async function GET(request: Request, { params }: RouteParams) {
 
   if (!historicalTransactions || historicalTransactions.length === 0) {
     conditionalPromises.push(
-      supabase
-        .schema("mart")
-        .from("province_transactions_semester")
-        .select("period_id, ntn_total, is_capoluogo")
-        .eq("province_code", provinceCode)
-        .eq("property_segment", segment)
-        .order("period_id", { ascending: false })
-        .limit(16)
-        .then(({ data }) => {
-          provincialTransactions = data;
-        })
+      (async () => {
+        const { data } = await supabase
+          .schema("mart")
+          .from("province_transactions_semester")
+          .select("period_id, ntn_total, is_capoluogo")
+          .eq("province_code", provinceCode)
+          .eq("property_segment", segment)
+          .order("period_id", { ascending: false })
+          .limit(16);
+        provincialTransactions = data;
+      })()
     );
   }
 
   if (neighbors && neighbors.length > 0) {
     const neighborIds = neighbors.map((n) => n.neighbor_id);
     conditionalPromises.push(
-      Promise.all([
-        supabase
-          .schema("core")
-          .from("municipalities")
-          .select("municipality_id, municipality_name")
-          .in("municipality_id", neighborIds),
-        supabase
-          .schema("mart")
-          .from("municipality_values_semester")
-          .select("municipality_id, value_mid_eur_sqm, period_id")
-          .in("municipality_id", neighborIds)
-          .eq("property_segment", segment)
-          .order("period_id", { ascending: false }),
-      ]).then(([{ data: neighborMunis }, { data: neighborValues }]) => {
+      (async () => {
+        const [{ data: neighborMunis }, { data: neighborValues }] = await Promise.all([
+          supabase
+            .schema("core")
+            .from("municipalities")
+            .select("municipality_id, municipality_name")
+            .in("municipality_id", neighborIds),
+          supabase
+            .schema("mart")
+            .from("municipality_values_semester")
+            .select("municipality_id, value_mid_eur_sqm, period_id")
+            .in("municipality_id", neighborIds)
+            .eq("property_segment", segment)
+            .order("period_id", { ascending: false }),
+        ]);
         const nameMap = new Map(
           (neighborMunis ?? []).map((m) => [m.municipality_id, m.municipality_name])
         );
@@ -298,7 +299,7 @@ export async function GET(request: Request, { params }: RouteParams) {
           sharedBorderKm: n.shared_border_km,
           valueMidEurSqm: valueMap.get(n.neighbor_id) ?? null,
         }));
-      })
+      })()
     );
   }
 
@@ -499,7 +500,8 @@ export async function GET(request: Request, { params }: RouteParams) {
       ? (() => {
           // Group by period and sum capoluogo + non-capoluogo
           const byPeriod = new Map<string, { capoluogo: number; nonCapoluogo: number }>();
-          for (const t of provincialTransactions) {
+          const transactions = provincialTransactions as Array<{ period_id: string; ntn_total: number; is_capoluogo: boolean }>;
+          for (const t of transactions) {
             const existing = byPeriod.get(t.period_id) || { capoluogo: 0, nonCapoluogo: 0 };
             if (t.is_capoluogo) {
               existing.capoluogo = t.ntn_total;
