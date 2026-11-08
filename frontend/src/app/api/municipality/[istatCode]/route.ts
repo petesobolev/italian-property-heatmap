@@ -307,9 +307,20 @@ export async function GET(request: Request, { params }: RouteParams) {
 
   // 11. Calculate derived metrics and fallback forecasts
 
+  // Filter historical values to only include periods with complete zone data
+  // This prevents artificial price swings when some zones are missing data
+  const maxZonesWithData = historicalValues
+    ? Math.max(...historicalValues.map(v => v.zones_with_data ?? 0))
+    : 0;
+  const completeHistoricalValues = historicalValues?.filter(
+    v => v.value_mid_eur_sqm != null && (maxZonesWithData <= 1 || v.zones_with_data === maxZonesWithData)
+  ) ?? [];
+
   // Get current values from historical data if forecast doesn't have them
+  // Use the latest period with complete zone data
   const latestHistorical = historicalValues?.[0];
-  const currentValue = latestForecast?.value_mid_eur_sqm ?? latestHistorical?.value_mid_eur_sqm ?? null;
+  const latestCompleteHistorical = completeHistoricalValues[0];
+  const currentValue = latestForecast?.value_mid_eur_sqm ?? latestCompleteHistorical?.value_mid_eur_sqm ?? latestHistorical?.value_mid_eur_sqm ?? null;
   const currentRent = latestHistorical?.rent_mid_eur_sqm_month ?? null;
 
   // Calculate gross yield from rent/value if not in forecast
@@ -321,13 +332,14 @@ export async function GET(request: Request, { params }: RouteParams) {
 
   // Calculate appreciation forecast from historical trend
   // Use average of semester-over-semester changes, annualized (x2 for yearly)
+  // Only compare periods with the same number of zones to avoid artificial swings
   let calculatedAppreciation: number | null = null;
-  if (historicalValues && historicalValues.length >= 2) {
-    // Collect valid semester changes
+  if (completeHistoricalValues.length >= 2) {
+    // Collect valid semester changes from complete data only
     const semesterChanges: number[] = [];
-    for (let i = 0; i < Math.min(historicalValues.length - 1, 4); i++) {
-      const current = historicalValues[i]?.value_mid_eur_sqm;
-      const previous = historicalValues[i + 1]?.value_mid_eur_sqm;
+    for (let i = 0; i < Math.min(completeHistoricalValues.length - 1, 4); i++) {
+      const current = completeHistoricalValues[i]?.value_mid_eur_sqm;
+      const previous = completeHistoricalValues[i + 1]?.value_mid_eur_sqm;
       if (current && previous && previous > 0) {
         const change = ((current - previous) / previous) * 100;
         semesterChanges.push(change);
@@ -352,11 +364,11 @@ export async function GET(request: Request, { params }: RouteParams) {
       ? currentValue * (1 + appreciation / 100)
       : null;
 
-  // Calculate price trend direction from historical
+  // Calculate price trend direction from historical (using complete data only)
   let priceTrend: "up" | "down" | "stable" | null = null;
-  if (historicalValues && historicalValues.length >= 2) {
-    const recent = historicalValues[0]?.value_mid_eur_sqm;
-    const previous = historicalValues[1]?.value_mid_eur_sqm;
+  if (completeHistoricalValues.length >= 2) {
+    const recent = completeHistoricalValues[0]?.value_mid_eur_sqm;
+    const previous = completeHistoricalValues[1]?.value_mid_eur_sqm;
     if (recent && previous) {
       const change = ((recent - previous) / previous) * 100;
       if (change > 1) priceTrend = "up";
