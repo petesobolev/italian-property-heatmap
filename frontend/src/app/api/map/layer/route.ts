@@ -377,16 +377,27 @@ export async function GET(request: Request) {
       const past = comparisonMap.get(municipalityId);
       if (!past || past.value_mid_eur_sqm <= 0) continue;
 
-      // Check if zone counts are consistent (within 80% of each other)
-      // This filters out cases like Scalea where some periods have 4 zones and others have 1-2
+      // Filter out municipalities with inconsistent zone coverage between periods
+      // Only apply strict filtering for small zone counts (where missing zones have big impact)
+      // For municipalities with many zones, allow more variance as samples are more representative
       const currentZones = current.zones_with_data ?? 0;
       const pastZones = past.zones_with_data ?? 0;
-      if (currentZones > 0 && pastZones > 0) {
-        const zoneRatio = Math.min(currentZones, pastZones) / Math.max(currentZones, pastZones);
-        if (zoneRatio < 0.8) {
-          // Zone counts too different - skip this municipality
+      const minZones = Math.min(currentZones, pastZones);
+      const maxZones = Math.max(currentZones, pastZones);
+
+      if (minZones > 0 && maxZones > 0) {
+        const zoneRatio = minZones / maxZones;
+        // Strict filtering for small zone counts (like Scalea with 1-4 zones)
+        // More lenient for larger zone counts (like Torrita di Siena with 12-55 zones)
+        if (minZones < 3 && zoneRatio < 0.5) {
+          // Very few zones and big variance - skip
           continue;
         }
+        if (minZones >= 3 && minZones < 10 && zoneRatio < 0.4) {
+          // Medium zone count, require 40% ratio
+          continue;
+        }
+        // For 10+ zones, don't filter based on ratio - sample is large enough
       }
 
       const pctChange = ((current.value_mid_eur_sqm - past.value_mid_eur_sqm) / past.value_mid_eur_sqm) * 100;
