@@ -307,13 +307,28 @@ export async function GET(request: Request, { params }: RouteParams) {
 
   // 11. Calculate derived metrics and fallback forecasts
 
-  // Filter historical values to only include periods with complete zone data
+  // Filter historical values to only include periods with consistent zone coverage
   // This prevents artificial price swings when some zones are missing data
-  const maxZonesWithData = historicalValues
-    ? Math.max(...historicalValues.map(v => v.zones_with_data ?? 0))
-    : 0;
+  // Use the mode (most common) zone count from recent periods as the baseline
+  const recentPeriods = historicalValues?.slice(0, 8) ?? [];
+  const zoneCounts = recentPeriods.map(v => v.zones_with_data ?? 0).filter(z => z > 0);
+  const zoneCountFrequency = new Map<number, number>();
+  for (const count of zoneCounts) {
+    zoneCountFrequency.set(count, (zoneCountFrequency.get(count) ?? 0) + 1);
+  }
+  // Find the mode (most common zone count)
+  let expectedZoneCount = 0;
+  let maxFrequency = 0;
+  for (const [count, freq] of zoneCountFrequency) {
+    if (freq > maxFrequency || (freq === maxFrequency && count > expectedZoneCount)) {
+      expectedZoneCount = count;
+      maxFrequency = freq;
+    }
+  }
+  // Filter to periods with zone count within 10% of expected (allows minor variation)
+  const zoneCountThreshold = Math.floor(expectedZoneCount * 0.9);
   const completeHistoricalValues = historicalValues?.filter(
-    v => v.value_mid_eur_sqm != null && (maxZonesWithData <= 1 || v.zones_with_data === maxZonesWithData)
+    v => v.value_mid_eur_sqm != null && (expectedZoneCount <= 1 || (v.zones_with_data ?? 0) >= zoneCountThreshold)
   ) ?? [];
 
   // Get current values from historical data if forecast doesn't have them

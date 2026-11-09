@@ -387,11 +387,18 @@ export function MunicipalityDrawer({
                     />
                   </div>
                   {m.historicalValues && m.historicalValues.length > 1 && (() => {
-                    // Filter to only include periods with complete zone data
-                    const maxZones = Math.max(...m.historicalValues.map(v => v.zonesWithData ?? 0));
+                    // Filter to periods with consistent zone coverage using mode-based threshold
+                    const recentZones = m.historicalValues.slice(0, 8).map(v => v.zonesWithData ?? 0).filter(z => z > 0);
+                    const freq = new Map<number, number>();
+                    for (const z of recentZones) freq.set(z, (freq.get(z) ?? 0) + 1);
+                    let expectedZones = 0, maxFreq = 0;
+                    for (const [z, f] of freq) {
+                      if (f > maxFreq || (f === maxFreq && z > expectedZones)) { expectedZones = z; maxFreq = f; }
+                    }
+                    const threshold = Math.floor(expectedZones * 0.9);
                     const completeData = [...m.historicalValues]
                       .reverse()
-                      .filter(v => v.valueMidEurSqm != null && (maxZones <= 1 || v.zonesWithData === maxZones))
+                      .filter(v => v.valueMidEurSqm != null && (expectedZones <= 1 || (v.zonesWithData ?? 0) >= threshold))
                       .map(v => v.valueMidEurSqm as number);
                     return completeData.length > 1 ? (
                       <div className="drawer__sparkline-card">

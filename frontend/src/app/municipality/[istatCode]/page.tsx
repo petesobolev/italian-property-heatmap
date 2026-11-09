@@ -679,11 +679,25 @@ export default function MunicipalityDetailPage({
   const valueMax = latestHistorical?.valueMaxEurSqm ?? null;
 
   // Prepare chart data (reverse to show oldest first)
-  // Filter to only include periods with complete zone data
-  const maxZones = Math.max(...historicalValues.map(v => v.zonesWithData ?? 0));
+  // Filter to only include periods with consistent zone coverage
+  // Use mode (most common) zone count from recent periods as baseline
+  const recentZoneCounts = historicalValues.slice(0, 8).map(v => v.zonesWithData ?? 0).filter(z => z > 0);
+  const zoneCountFreq = new Map<number, number>();
+  for (const count of recentZoneCounts) {
+    zoneCountFreq.set(count, (zoneCountFreq.get(count) ?? 0) + 1);
+  }
+  let expectedZones = 0;
+  let maxFreq = 0;
+  for (const [count, freq] of zoneCountFreq) {
+    if (freq > maxFreq || (freq === maxFreq && count > expectedZones)) {
+      expectedZones = count;
+      maxFreq = freq;
+    }
+  }
+  const zoneThreshold = Math.floor(expectedZones * 0.9);
   const reversedHistoricalValues = [...historicalValues].reverse();
   const completeHistoricalValues = reversedHistoricalValues.filter(
-    v => v.valueMidEurSqm != null && (maxZones <= 1 || v.zonesWithData === maxZones)
+    v => v.valueMidEurSqm != null && (expectedZones <= 1 || (v.zonesWithData ?? 0) >= zoneThreshold)
   );
   const priceHistory = completeHistoricalValues.map(v => v.valueMidEurSqm as number);
   const priceHistoryLabels = completeHistoricalValues.map(v => v.periodId);
