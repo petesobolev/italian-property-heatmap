@@ -58,53 +58,62 @@ async function getZoneValueChange(
 
   // Fallback: Get municipality-level value change and apply to all zones
   // This provides meaningful data even when zone-level historical data isn't available
-  const { data: availablePeriods } = await supabase
+  // Use zone-filtered data to ensure consistent comparison
+  const { data: historicalData } = await supabase
     .schema("mart")
-    .rpc("get_available_periods", { p_segment: segment });
+    .from("municipality_values_semester")
+    .select("period_id, value_mid_eur_sqm, zones_with_data")
+    .eq("municipality_id", municipalityId)
+    .eq("property_segment", segment)
+    .not("value_mid_eur_sqm", "is", null)
+    .order("period_id", { ascending: false });
 
-  const allPeriods = availablePeriods?.map((p: { period_id: string }) => p.period_id) ?? [];
-
-  if (allPeriods.length < 2) {
+  if (!historicalData || historicalData.length < 2) {
     return { valuesByZoneCode: new Map(), source: "no_historical_data" };
   }
 
-  // Determine comparison period
+  // Get recent periods (last 8 semesters) to calculate expected zone count
+  const recentValues = historicalData.slice(0, 8);
+  const zoneCounts = recentValues.map(v => v.zones_with_data ?? 0).filter(z => z > 0);
+
+  // Find mode (most common) zone count
+  const zoneFreq = new Map<number, number>();
+  for (const count of zoneCounts) {
+    zoneFreq.set(count, (zoneFreq.get(count) ?? 0) + 1);
+  }
+  let expectedZones = 0;
+  let maxFreq = 0;
+  for (const [count, freq] of zoneFreq) {
+    if (freq > maxFreq || (freq === maxFreq && count > expectedZones)) {
+      expectedZones = count;
+      maxFreq = freq;
+    }
+  }
+
+  // Filter to periods with consistent zone coverage (within 90% of expected)
+  const zoneThreshold = Math.floor(expectedZones * 0.9);
+  const completeValues = historicalData.filter(
+    v => expectedZones <= 1 || (v.zones_with_data ?? 0) >= zoneThreshold
+  );
+
+  if (completeValues.length < 2) {
+    return { valuesByZoneCode: new Map(), source: "insufficient_complete_data" };
+  }
+
+  // Determine how many semesters to look back
   const semestersBack = changeYears === 0
-    ? allPeriods.length - 1
+    ? completeValues.length - 1
     : changeYears * 2;
 
-  const currentPeriod = allPeriods[0];
-  const comparisonIndex = Math.min(semestersBack, allPeriods.length - 1);
-  const comparisonPeriod = allPeriods[comparisonIndex];
+  const currentValue = completeValues[0];
+  const comparisonIndex = Math.min(semestersBack, completeValues.length - 1);
+  const comparisonValue = completeValues[comparisonIndex];
 
-  // Get municipality-level values for both periods
-  const [currentData, comparisonData] = await Promise.all([
-    supabase
-      .schema("mart")
-      .from("municipality_values_semester")
-      .select("value_mid_eur_sqm")
-      .eq("municipality_id", municipalityId)
-      .eq("period_id", currentPeriod)
-      .eq("property_segment", segment)
-      .single(),
-    supabase
-      .schema("mart")
-      .from("municipality_values_semester")
-      .select("value_mid_eur_sqm")
-      .eq("municipality_id", municipalityId)
-      .eq("period_id", comparisonPeriod)
-      .eq("property_segment", segment)
-      .single(),
-  ]);
-
-  const currentValue = currentData.data?.value_mid_eur_sqm;
-  const pastValue = comparisonData.data?.value_mid_eur_sqm;
-
-  if (!currentValue || !pastValue || pastValue <= 0) {
+  if (!currentValue?.value_mid_eur_sqm || !comparisonValue?.value_mid_eur_sqm || comparisonValue.value_mid_eur_sqm <= 0) {
     return { valuesByZoneCode: new Map(), source: "municipality_no_data" };
   }
 
-  const municipalityChange = ((currentValue - pastValue) / pastValue) * 100;
+  const municipalityChange = ((currentValue.value_mid_eur_sqm - comparisonValue.value_mid_eur_sqm) / comparisonValue.value_mid_eur_sqm) * 100;
 
   // Apply municipality-level change to all zones (same value for all)
   const valuesByZoneCode = new Map<string, number | null>();

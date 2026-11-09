@@ -308,20 +308,10 @@ export async function GET(request: Request) {
       });
     }
 
-    // Determine how many semesters to look back (2 semesters per year)
-    // changeYears = 0 means "max" (go back to earliest available)
-    const semestersBack = changeYears === 0
-      ? allPeriods.length - 1
-      : changeYears * 2;
-
-    const currentPeriod = allPeriods[0]; // Most recent
-    // Use earliest available if requested period exceeds available data
-    const comparisonIndex = Math.min(semestersBack, allPeriods.length - 1);
-    const comparisonPeriod = allPeriods[comparisonIndex];
-
-    // Fetch values for both periods in parallel with batching
-    const fetchPeriodValues = async (periodId: string) => {
-      const rows: { municipality_id: string; value_mid_eur_sqm: number }[] = [];
+    // Fetch all historical data with zone counts to enable filtering
+    // We need zone counts to filter out periods with incomplete data
+    const fetchAllValues = async () => {
+      const rows: { municipality_id: string; period_id: string; value_mid_eur_sqm: number; zones_with_data: number }[] = [];
       const batchSize = 1000;
       let offset = 0;
       let hasMore = true;
@@ -330,8 +320,7 @@ export async function GET(request: Request) {
         const { data: batch, error } = await supabase
           .schema("mart")
           .from("municipality_values_semester")
-          .select("municipality_id, value_mid_eur_sqm")
-          .eq("period_id", periodId)
+          .select("municipality_id, period_id, value_mid_eur_sqm, zones_with_data")
           .eq("property_segment", segment)
           .not("value_mid_eur_sqm", "is", null)
           .range(offset, offset + batchSize - 1);
@@ -349,14 +338,10 @@ export async function GET(request: Request) {
       return rows;
     };
 
-    let currentValues: { municipality_id: string; value_mid_eur_sqm: number }[];
-    let comparisonValues: { municipality_id: string; value_mid_eur_sqm: number }[];
+    let allValues: { municipality_id: string; period_id: string; value_mid_eur_sqm: number; zones_with_data: number }[];
 
     try {
-      [currentValues, comparisonValues] = await Promise.all([
-        fetchPeriodValues(currentPeriod),
-        fetchPeriodValues(comparisonPeriod),
-      ]);
+      allValues = await fetchAllValues();
     } catch (err) {
       return NextResponse.json(
         { metric, segment, changeYears, asOf: new Date().toISOString(), error: String(err), features: [] },
@@ -364,19 +349,69 @@ export async function GET(request: Request) {
       );
     }
 
-    // Build maps for lookup
-    const currentMap = new Map(currentValues.map(r => [r.municipality_id, r.value_mid_eur_sqm]));
-    const comparisonMap = new Map(comparisonValues.map(r => [r.municipality_id, r.value_mid_eur_sqm]));
+    // Group values by municipality
+    const valuesByMunicipality = new Map<string, typeof allValues>();
+    for (const row of allValues) {
+      const existing = valuesByMunicipality.get(row.municipality_id) ?? [];
+      existing.push(row);
+      valuesByMunicipality.set(row.municipality_id, existing);
+    }
 
-    // Calculate percentage changes
+    // Determine how many semesters to look back (2 semesters per year)
+    const semestersBack = changeYears === 0
+      ? allPeriods.length - 1
+      : changeYears * 2;
+
+    // Calculate percentage changes using zone-filtered data
     const features: { municipalityId: string; value: number }[] = [];
-    for (const [municipalityId, currentValue] of currentMap) {
-      const pastValue = comparisonMap.get(municipalityId);
-      if (pastValue && pastValue > 0) {
-        const pctChange = ((currentValue - pastValue) / pastValue) * 100;
+
+    for (const [municipalityId, values] of valuesByMunicipality) {
+      // Sort by period descending
+      values.sort((a, b) => b.period_id.localeCompare(a.period_id));
+
+      // Get recent periods (last 8 semesters) to calculate expected zone count
+      const recentValues = values.slice(0, 8);
+      const zoneCounts = recentValues.map(v => v.zones_with_data ?? 0).filter(z => z > 0);
+
+      // Find mode (most common) zone count
+      const zoneFreq = new Map<number, number>();
+      for (const count of zoneCounts) {
+        zoneFreq.set(count, (zoneFreq.get(count) ?? 0) + 1);
+      }
+      let expectedZones = 0;
+      let maxFreq = 0;
+      for (const [count, freq] of zoneFreq) {
+        if (freq > maxFreq || (freq === maxFreq && count > expectedZones)) {
+          expectedZones = count;
+          maxFreq = freq;
+        }
+      }
+
+      // Filter to periods with consistent zone coverage (within 90% of expected)
+      const zoneThreshold = Math.floor(expectedZones * 0.9);
+      const completeValues = values.filter(
+        v => expectedZones <= 1 || (v.zones_with_data ?? 0) >= zoneThreshold
+      );
+
+      if (completeValues.length < 2) continue;
+
+      // Find current and comparison values from filtered data
+      const currentValue = completeValues[0];
+
+      // Find comparison value at approximately the right time offset
+      const comparisonIndex = Math.min(semestersBack, completeValues.length - 1);
+      const comparisonValue = completeValues[comparisonIndex];
+
+      if (currentValue && comparisonValue && comparisonValue.value_mid_eur_sqm > 0) {
+        const pctChange = ((currentValue.value_mid_eur_sqm - comparisonValue.value_mid_eur_sqm) / comparisonValue.value_mid_eur_sqm) * 100;
         features.push({ municipalityId, value: pctChange });
       }
     }
+
+    // Determine display periods (for metadata only)
+    const currentPeriod = allPeriods[0];
+    const comparisonIndex = Math.min(semestersBack, allPeriods.length - 1);
+    const comparisonPeriod = allPeriods[comparisonIndex];
 
     return NextResponse.json({
       metric,
@@ -386,7 +421,7 @@ export async function GET(request: Request) {
       currentPeriod,
       comparisonPeriod,
       asOf: currentPeriod,
-      source: "mart.municipality_values_semester (calculated)",
+      source: "mart.municipality_values_semester (zone-filtered)",
       features,
     }, {
       headers: { "Cache-Control": "public, max-age=300, stale-while-revalidate=3600" },
