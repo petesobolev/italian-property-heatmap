@@ -319,10 +319,11 @@ export async function GET(request: Request) {
     const comparisonIndex = Math.min(semestersBack, allPeriods.length - 1);
     const comparisonPeriod = allPeriods[comparisonIndex];
 
-    // Fetch values for both periods in parallel with batching
-    // Include zones_with_data for filtering
+    // Fetch zone-level values and aggregate to municipality level
+    // The municipality_values_semester table has incorrect aggregations for some periods,
+    // so we calculate proper averages from the zone-level data (omi_zone_values_semester)
     const fetchPeriodValues = async (periodId: string) => {
-      const rows: { municipality_id: string; value_mid_eur_sqm: number; zones_with_data: number }[] = [];
+      const rows: { omi_zone_id: string; value_mid_eur_sqm: number }[] = [];
       const batchSize = 1000;
       let offset = 0;
       let hasMore = true;
@@ -330,8 +331,8 @@ export async function GET(request: Request) {
       while (hasMore) {
         const { data: batch, error } = await supabase
           .schema("mart")
-          .from("municipality_values_semester")
-          .select("municipality_id, value_mid_eur_sqm, zones_with_data")
+          .from("omi_zone_values_semester")
+          .select("omi_zone_id, value_mid_eur_sqm")
           .eq("period_id", periodId)
           .eq("property_segment", segment)
           .not("value_mid_eur_sqm", "is", null)
@@ -347,11 +348,27 @@ export async function GET(request: Request) {
           hasMore = false;
         }
       }
-      return rows;
+
+      // Aggregate zones to municipality level (average of zone values)
+      const municipalityValues = new Map<string, { sum: number; count: number }>();
+      for (const row of rows) {
+        // omi_zone_id format is "municipality_id_zone_code"
+        const municipalityId = row.omi_zone_id.split("_")[0];
+        const current = municipalityValues.get(municipalityId) ?? { sum: 0, count: 0 };
+        current.sum += row.value_mid_eur_sqm;
+        current.count += 1;
+        municipalityValues.set(municipalityId, current);
+      }
+
+      return Array.from(municipalityValues.entries()).map(([id, { sum, count }]) => ({
+        municipality_id: id,
+        value_mid_eur_sqm: sum / count,
+        zone_count: count,
+      }));
     };
 
-    let currentValues: { municipality_id: string; value_mid_eur_sqm: number; zones_with_data: number }[];
-    let comparisonValues: { municipality_id: string; value_mid_eur_sqm: number; zones_with_data: number }[];
+    let currentValues: { municipality_id: string; value_mid_eur_sqm: number; zone_count: number }[];
+    let comparisonValues: { municipality_id: string; value_mid_eur_sqm: number; zone_count: number }[];
 
     try {
       [currentValues, comparisonValues] = await Promise.all([
@@ -370,35 +387,11 @@ export async function GET(request: Request) {
     const comparisonMap = new Map(comparisonValues.map(r => [r.municipality_id, r]));
 
     // Calculate percentage changes
-    // Filter out municipalities where zone count differs significantly between periods
-    // This prevents artificial swings from incomplete zone data
+    // Only include municipalities that have data in both periods
     const features: { municipalityId: string; value: number }[] = [];
     for (const [municipalityId, current] of currentMap) {
       const past = comparisonMap.get(municipalityId);
       if (!past || past.value_mid_eur_sqm <= 0) continue;
-
-      // Filter out municipalities with inconsistent zone coverage between periods
-      // Only apply strict filtering for small zone counts (where missing zones have big impact)
-      // For municipalities with many zones, allow more variance as samples are more representative
-      const currentZones = current.zones_with_data ?? 0;
-      const pastZones = past.zones_with_data ?? 0;
-      const minZones = Math.min(currentZones, pastZones);
-      const maxZones = Math.max(currentZones, pastZones);
-
-      if (minZones > 0 && maxZones > 0) {
-        const zoneRatio = minZones / maxZones;
-        // Strict filtering for small zone counts (like Scalea with 1-4 zones)
-        // More lenient for larger zone counts (like Torrita di Siena with 12-55 zones)
-        if (minZones < 3 && zoneRatio < 0.5) {
-          // Very few zones and big variance - skip
-          continue;
-        }
-        if (minZones >= 3 && minZones < 10 && zoneRatio < 0.4) {
-          // Medium zone count, require 40% ratio
-          continue;
-        }
-        // For 10+ zones, don't filter based on ratio - sample is large enough
-      }
 
       const pctChange = ((current.value_mid_eur_sqm - past.value_mid_eur_sqm) / past.value_mid_eur_sqm) * 100;
       features.push({ municipalityId, value: pctChange });
@@ -412,7 +405,7 @@ export async function GET(request: Request) {
       currentPeriod,
       comparisonPeriod,
       asOf: currentPeriod,
-      source: "mart.municipality_values_semester (zone-filtered)",
+      source: "mart.omi_zone_values_semester (aggregated)",
       features,
     }, {
       headers: { "Cache-Control": "public, max-age=300, stale-while-revalidate=3600" },
