@@ -46,7 +46,7 @@ const FLAT_TAX_ELIGIBLE_REGIONS = new Set([
 
 // Color scales for different metrics
 // fixedRange: Use fixed min/max instead of data-driven range (matches MapLegend config)
-const COLOR_SCALES: Record<MetricType, { stops: number[][]; noData: string; fixedRange?: { min: number; max: number } }> = {
+const COLOR_SCALES: Record<MetricType, { stops: number[][]; noData: string; fixedRange?: { min: number; max: number }; symmetric?: boolean }> = {
   value_mid_eur_sqm: {
     stops: [
       [7, 21, 37],     // Very dark navy (low values)
@@ -164,7 +164,8 @@ const COLOR_SCALES: Record<MetricType, { stops: number[][]; noData: string; fixe
       [26, 152, 80],    // Deep green (large growth)
     ],
     noData: "#2a2d35",
-    fixedRange: { min: -20, max: 20 }, // Centered on zero: negative=red, positive=green
+    // No fixedRange - use dynamic symmetric range centered on zero
+    symmetric: true, // Flag for diverging scales that need zero-centered range
   },
 };
 
@@ -845,7 +846,25 @@ export function MapInner() {
     }
 
     if (vals.length === 0) return { min: 0, max: 0 };
-    return { min: vals[0], max: vals[vals.length - 1] };
+
+    let min = vals[0];
+    let max = vals[vals.length - 1];
+
+    // For symmetric/diverging scales (like value change), center around zero
+    // This ensures the neutral color (gray) is at exactly 0%
+    const scale = COLOR_SCALES[filters.metric];
+    if (scale.symmetric) {
+      const absMax = Math.max(Math.abs(min), Math.abs(max));
+      // Round up to a nice number for cleaner legend
+      const niceMax = absMax <= 5 ? Math.ceil(absMax)
+        : absMax <= 10 ? Math.ceil(absMax / 2) * 2
+        : absMax <= 25 ? Math.ceil(absMax / 5) * 5
+        : Math.ceil(absMax / 10) * 10;
+      min = -niceMax;
+      max = niceMax;
+    }
+
+    return { min, max };
   }, [valuesByMunicipality, visibleMunicipalityIds, filters.metric]);
 
   // Color function
