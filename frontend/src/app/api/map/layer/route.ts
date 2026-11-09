@@ -308,10 +308,21 @@ export async function GET(request: Request) {
       });
     }
 
-    // Fetch all historical data with zone counts to enable filtering
-    // We need zone counts to filter out periods with incomplete data
-    const fetchAllValues = async () => {
-      const rows: { municipality_id: string; period_id: string; value_mid_eur_sqm: number; zones_with_data: number }[] = [];
+    // Determine how many semesters to look back (2 semesters per year)
+    // changeYears = 0 means "max" (go back to earliest available)
+    const semestersBack = changeYears === 0
+      ? allPeriods.length - 1
+      : changeYears * 2;
+
+    const currentPeriod = allPeriods[0]; // Most recent
+    // Use earliest available if requested period exceeds available data
+    const comparisonIndex = Math.min(semestersBack, allPeriods.length - 1);
+    const comparisonPeriod = allPeriods[comparisonIndex];
+
+    // Fetch values for both periods in parallel with batching
+    // Include zones_with_data for filtering
+    const fetchPeriodValues = async (periodId: string) => {
+      const rows: { municipality_id: string; value_mid_eur_sqm: number; zones_with_data: number }[] = [];
       const batchSize = 1000;
       let offset = 0;
       let hasMore = true;
@@ -320,7 +331,8 @@ export async function GET(request: Request) {
         const { data: batch, error } = await supabase
           .schema("mart")
           .from("municipality_values_semester")
-          .select("municipality_id, period_id, value_mid_eur_sqm, zones_with_data")
+          .select("municipality_id, value_mid_eur_sqm, zones_with_data")
+          .eq("period_id", periodId)
           .eq("property_segment", segment)
           .not("value_mid_eur_sqm", "is", null)
           .range(offset, offset + batchSize - 1);
@@ -338,10 +350,14 @@ export async function GET(request: Request) {
       return rows;
     };
 
-    let allValues: { municipality_id: string; period_id: string; value_mid_eur_sqm: number; zones_with_data: number }[];
+    let currentValues: { municipality_id: string; value_mid_eur_sqm: number; zones_with_data: number }[];
+    let comparisonValues: { municipality_id: string; value_mid_eur_sqm: number; zones_with_data: number }[];
 
     try {
-      allValues = await fetchAllValues();
+      [currentValues, comparisonValues] = await Promise.all([
+        fetchPeriodValues(currentPeriod),
+        fetchPeriodValues(comparisonPeriod),
+      ]);
     } catch (err) {
       return NextResponse.json(
         { metric, segment, changeYears, asOf: new Date().toISOString(), error: String(err), features: [] },
@@ -349,69 +365,33 @@ export async function GET(request: Request) {
       );
     }
 
-    // Group values by municipality
-    const valuesByMunicipality = new Map<string, typeof allValues>();
-    for (const row of allValues) {
-      const existing = valuesByMunicipality.get(row.municipality_id) ?? [];
-      existing.push(row);
-      valuesByMunicipality.set(row.municipality_id, existing);
-    }
+    // Build maps for lookup
+    const currentMap = new Map(currentValues.map(r => [r.municipality_id, r]));
+    const comparisonMap = new Map(comparisonValues.map(r => [r.municipality_id, r]));
 
-    // Determine how many semesters to look back (2 semesters per year)
-    const semestersBack = changeYears === 0
-      ? allPeriods.length - 1
-      : changeYears * 2;
-
-    // Calculate percentage changes using zone-filtered data
+    // Calculate percentage changes
+    // Filter out municipalities where zone count differs significantly between periods
+    // This prevents artificial swings from incomplete zone data
     const features: { municipalityId: string; value: number }[] = [];
+    for (const [municipalityId, current] of currentMap) {
+      const past = comparisonMap.get(municipalityId);
+      if (!past || past.value_mid_eur_sqm <= 0) continue;
 
-    for (const [municipalityId, values] of valuesByMunicipality) {
-      // Sort by period descending
-      values.sort((a, b) => b.period_id.localeCompare(a.period_id));
-
-      // Get recent periods (last 8 semesters) to calculate expected zone count
-      const recentValues = values.slice(0, 8);
-      const zoneCounts = recentValues.map(v => v.zones_with_data ?? 0).filter(z => z > 0);
-
-      // Find mode (most common) zone count
-      const zoneFreq = new Map<number, number>();
-      for (const count of zoneCounts) {
-        zoneFreq.set(count, (zoneFreq.get(count) ?? 0) + 1);
-      }
-      let expectedZones = 0;
-      let maxFreq = 0;
-      for (const [count, freq] of zoneFreq) {
-        if (freq > maxFreq || (freq === maxFreq && count > expectedZones)) {
-          expectedZones = count;
-          maxFreq = freq;
+      // Check if zone counts are consistent (within 80% of each other)
+      // This filters out cases like Scalea where some periods have 4 zones and others have 1-2
+      const currentZones = current.zones_with_data ?? 0;
+      const pastZones = past.zones_with_data ?? 0;
+      if (currentZones > 0 && pastZones > 0) {
+        const zoneRatio = Math.min(currentZones, pastZones) / Math.max(currentZones, pastZones);
+        if (zoneRatio < 0.8) {
+          // Zone counts too different - skip this municipality
+          continue;
         }
       }
 
-      // Filter to periods with consistent zone coverage (within 90% of expected)
-      const zoneThreshold = Math.floor(expectedZones * 0.9);
-      const completeValues = values.filter(
-        v => expectedZones <= 1 || (v.zones_with_data ?? 0) >= zoneThreshold
-      );
-
-      if (completeValues.length < 2) continue;
-
-      // Find current and comparison values from filtered data
-      const currentValue = completeValues[0];
-
-      // Find comparison value at approximately the right time offset
-      const comparisonIndex = Math.min(semestersBack, completeValues.length - 1);
-      const comparisonValue = completeValues[comparisonIndex];
-
-      if (currentValue && comparisonValue && comparisonValue.value_mid_eur_sqm > 0) {
-        const pctChange = ((currentValue.value_mid_eur_sqm - comparisonValue.value_mid_eur_sqm) / comparisonValue.value_mid_eur_sqm) * 100;
-        features.push({ municipalityId, value: pctChange });
-      }
+      const pctChange = ((current.value_mid_eur_sqm - past.value_mid_eur_sqm) / past.value_mid_eur_sqm) * 100;
+      features.push({ municipalityId, value: pctChange });
     }
-
-    // Determine display periods (for metadata only)
-    const currentPeriod = allPeriods[0];
-    const comparisonIndex = Math.min(semestersBack, allPeriods.length - 1);
-    const comparisonPeriod = allPeriods[comparisonIndex];
 
     return NextResponse.json({
       metric,
