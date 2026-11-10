@@ -22,6 +22,7 @@ interface ZoneValueRow {
   value_max_eur_sqm: number | null;
   rent_mid_eur_sqm_month: number | null;
   value_pct_change_1s: number | null;
+  value_pct_change_2s: number | null;
 }
 
 export async function GET(request: Request, { params }: RouteParams) {
@@ -99,7 +100,7 @@ async function processZones(
     const { data: martValues } = await supabase
       .schema("mart")
       .from("omi_zone_values_semester")
-      .select("omi_zone_id, period_id, value_mid_eur_sqm, value_min_eur_sqm, value_max_eur_sqm, rent_mid_eur_sqm_month, value_pct_change_1s")
+      .select("omi_zone_id, period_id, value_mid_eur_sqm, value_min_eur_sqm, value_max_eur_sqm, rent_mid_eur_sqm_month, value_pct_change_1s, value_pct_change_2s")
       .in("omi_zone_id", zoneIds)
       .eq("property_segment", segment)
       .order("period_id", { ascending: false });
@@ -157,6 +158,7 @@ async function processZones(
             value_max_eur_sqm: agg.values_max.length > 0 ? Math.max(...agg.values_max) : null,
             rent_mid_eur_sqm_month: allRents.length > 0 ? allRents.reduce((a, b) => a + b, 0) / allRents.length : null,
             value_pct_change_1s: null, // Not calculated here
+            value_pct_change_2s: null, // Not calculated here
           };
         });
       }
@@ -171,6 +173,7 @@ async function processZones(
     valueMaxEurSqm: number | null;
     rentMidEurSqmMonth: number | null;
     pctChange1s: number | null;
+    pctChange2s: number | null;
   }>();
 
   for (const v of values) {
@@ -182,6 +185,7 @@ async function processZones(
         valueMaxEurSqm: v.value_max_eur_sqm,
         rentMidEurSqmMonth: v.rent_mid_eur_sqm_month,
         pctChange1s: v.value_pct_change_1s,
+        pctChange2s: v.value_pct_change_2s,
       });
     }
   }

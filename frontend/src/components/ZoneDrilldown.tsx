@@ -16,6 +16,7 @@ interface ZoneProperties {
     valueMaxEurSqm: number | null;
     rentMidEurSqmMonth: number | null;
     pctChange1s: number | null;
+    pctChange2s: number | null;
   } | null;
   forecast: null; // No zone-level forecasts in current schema
 }
@@ -193,7 +194,7 @@ export function ZoneDrilldown({
       case "value":
         return (bVal?.valueMidEurSqm ?? 0) - (aVal?.valueMidEurSqm ?? 0);
       case "change":
-        return (bVal?.pctChange1s ?? -999) - (aVal?.pctChange1s ?? -999);
+        return (bVal?.pctChange2s ?? -999) - (aVal?.pctChange2s ?? -999);
       default:
         return 0;
     }
@@ -235,7 +236,7 @@ export function ZoneDrilldown({
             className="sort-select"
           >
             <option value="value">Value (High to Low)</option>
-            <option value="change">Price Change</option>
+            <option value="change">Price Change (1 yr.)</option>
           </select>
         </div>
       </div>

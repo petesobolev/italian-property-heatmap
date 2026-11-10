@@ -263,9 +263,11 @@ function ScoreRing({
   );
 }
 
-// Mini Chart for historical data with axis labels
+// Mini Chart for historical data with axis labels and optional min/max envelope
 function MiniChart({
   data,
+  minData,
+  maxData,
   labels,
   color = "#c4785c",
   height = 80,
@@ -273,42 +275,91 @@ function MiniChart({
   formatValue,
 }: {
   data: number[];
+  minData?: number[];
+  maxData?: number[];
   labels?: string[];
   color?: string;
   height?: number;
   showAxes?: boolean;
   formatValue?: (v: number) => string;
 }) {
+  const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
+
   if (data.length === 0) return null;
 
-  const max = Math.max(...data);
-  const min = Math.min(...data);
-  const range = max - min || 1;
+  // Calculate global min/max including envelope data for consistent scaling
+  const allValues = [...data];
+  if (minData) allValues.push(...minData.filter(v => v != null));
+  if (maxData) allValues.push(...maxData.filter(v => v != null));
 
-  // Adjust dimensions for axes
-  const width = showAxes ? 280 : 100;
-  const leftPadding = showAxes ? 50 : 10;
+  const globalMax = Math.max(...allValues);
+  const globalMin = Math.min(...allValues);
+  const range = globalMax - globalMin || 1;
+
+  // Adjust dimensions for axes (larger chart when showing axes)
+  const width = showAxes ? 420 : 100;
+  const leftPadding = showAxes ? 60 : 10;
   const rightPadding = 10;
   const topPadding = 12;
   const bottomPadding = showAxes ? 22 : 10;
   const chartWidth = width - leftPadding - rightPadding;
   const chartHeight = height - topPadding - bottomPadding;
 
-  const points = data.map((value, i) => {
-    const x = leftPadding + (i / (data.length - 1)) * chartWidth;
-    const y = topPadding + chartHeight - ((value - min) / range) * chartHeight;
-    return `${x},${y}`;
-  });
+  const valueToY = (value: number) => {
+    return topPadding + chartHeight - ((value - globalMin) / range) * chartHeight;
+  };
 
+  const indexToX = (i: number) => {
+    return leftPadding + (i / (data.length - 1)) * chartWidth;
+  };
+
+  // Main line points
+  const points = data.map((value, i) => `${indexToX(i)},${valueToY(value)}`);
   const pathD = `M ${points.join(" L ")}`;
-  const areaD = `${pathD} L ${leftPadding + chartWidth},${topPadding + chartHeight} L ${leftPadding},${topPadding + chartHeight} Z`;
+
+  // Build envelope path if min/max data is available
+  let envelopeD = "";
+  if (minData && maxData && minData.length === data.length && maxData.length === data.length) {
+    // Upper boundary (max values, left to right)
+    const upperPoints: string[] = [];
+    for (let i = 0; i < data.length; i++) {
+      if (maxData[i] != null) {
+        upperPoints.push(`${indexToX(i)},${valueToY(maxData[i])}`);
+      }
+    }
+
+    // Lower boundary (min values, right to left for closed path)
+    const lowerPoints: string[] = [];
+    for (let i = data.length - 1; i >= 0; i--) {
+      if (minData[i] != null) {
+        lowerPoints.push(`${indexToX(i)},${valueToY(minData[i])}`);
+      }
+    }
+
+    if (upperPoints.length > 1 && lowerPoints.length > 1) {
+      envelopeD = `M ${upperPoints.join(" L ")} L ${lowerPoints.join(" L ")} Z`;
+    }
+  }
+
+  // Fallback: area under the line
+  const areaD = `${pathD} L ${indexToX(data.length - 1)},${topPadding + chartHeight} L ${indexToX(0)},${topPadding + chartHeight} Z`;
 
   // Format with comma separator and euro symbol (4 significant figures)
   const defaultFormat = (v: number) => `€${v.toLocaleString('en-US', { maximumFractionDigits: 0 })}`;
   const fmt = formatValue || defaultFormat;
 
-  // Generate unique gradient ID to avoid conflicts
+  // Generate unique gradient IDs to avoid conflicts
   const gradientId = `chartGradient-${Math.random().toString(36).substr(2, 9)}`;
+  const envelopeGradientId = `envelopeGradient-${Math.random().toString(36).substr(2, 9)}`;
+
+  // Format semester label for display (e.g., "2026H1" -> "H1 2026")
+  const formatSemester = (label: string) => {
+    const match = label.match(/^(\d{4})(H[12])$/);
+    if (match) {
+      return `${match[2]} ${match[1]}`;
+    }
+    return label;
+  };
 
   return (
     <svg viewBox={`0 0 ${width} ${height}`} className="mini-chart" preserveAspectRatio="xMidYMid meet">
@@ -317,16 +368,21 @@ function MiniChart({
           <stop offset="0%" stopColor={color} stopOpacity="0.3" />
           <stop offset="100%" stopColor={color} stopOpacity="0" />
         </linearGradient>
+        <linearGradient id={envelopeGradientId} x1="0%" y1="0%" x2="0%" y2="100%">
+          <stop offset="0%" stopColor={color} stopOpacity="0.15" />
+          <stop offset="50%" stopColor={color} stopOpacity="0.08" />
+          <stop offset="100%" stopColor={color} stopOpacity="0.15" />
+        </linearGradient>
       </defs>
 
       {/* Y-axis labels */}
       {showAxes && (
         <>
           <text x={leftPadding - 4} y={topPadding + 4} textAnchor="end" className="axis-label">
-            {fmt(max)}
+            {fmt(globalMax)}
           </text>
           <text x={leftPadding - 4} y={topPadding + chartHeight} textAnchor="end" className="axis-label">
-            {fmt(min)}
+            {fmt(globalMin)}
           </text>
           {/* Horizontal grid lines */}
           <line
@@ -342,20 +398,72 @@ function MiniChart({
         </>
       )}
 
-      <path d={areaD} fill={`url(#${gradientId})`} />
-      <path d={pathD} fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" />
+      {/* Envelope (min-max range) */}
+      {envelopeD && (
+        <path d={envelopeD} fill={`url(#${envelopeGradientId})`} />
+      )}
+      {/* Area under the average line (fallback if no envelope) */}
+      {!envelopeD && (
+        <path d={areaD} fill={`url(#${gradientId})`} />
+      )}
 
-      {data.map((value, i) => {
-        const x = leftPadding + (i / (data.length - 1)) * chartWidth;
-        const y = topPadding + chartHeight - ((value - min) / range) * chartHeight;
-        return <circle key={i} cx={x} cy={y} r="3" fill={color} />;
-      })}
+      {/* Main line */}
+      <path d={pathD} fill="none" stroke={color} strokeWidth="2.5" strokeLinecap="round" />
+
+      {/* Data points with hover interaction */}
+      {data.map((value, i) => (
+        <circle
+          key={i}
+          cx={indexToX(i)}
+          cy={valueToY(value)}
+          r={hoveredIndex === i ? 6 : 4}
+          fill={color}
+          className="data-point"
+          onMouseEnter={() => setHoveredIndex(i)}
+          onMouseLeave={() => setHoveredIndex(null)}
+        />
+      ))}
+
+      {/* Tooltip */}
+      {hoveredIndex !== null && labels && labels[hoveredIndex] && (
+        <g>
+          {/* Tooltip background */}
+          <rect
+            x={indexToX(hoveredIndex) - 45}
+            y={valueToY(data[hoveredIndex]) - 48}
+            width="90"
+            height="38"
+            rx="5"
+            fill="rgba(30, 30, 30, 0.95)"
+            stroke="rgba(255,255,255,0.2)"
+            strokeWidth="1"
+          />
+          {/* Semester label */}
+          <text
+            x={indexToX(hoveredIndex)}
+            y={valueToY(data[hoveredIndex]) - 32}
+            textAnchor="middle"
+            className="tooltip-label"
+          >
+            {formatSemester(labels[hoveredIndex])}
+          </text>
+          {/* Value */}
+          <text
+            x={indexToX(hoveredIndex)}
+            y={valueToY(data[hoveredIndex]) - 16}
+            textAnchor="middle"
+            className="tooltip-value"
+          >
+            {fmt(data[hoveredIndex])}
+          </text>
+        </g>
+      )}
 
       {/* X-axis labels */}
       {showAxes && labels && labels.length > 0 && (
         <>
           {labels.map((label, i) => {
-            const x = leftPadding + (i / (labels.length - 1)) * chartWidth;
+            const x = indexToX(i);
             // Only show first, middle, and last labels to avoid crowding
             const showLabel = i === 0 || i === labels.length - 1 || (labels.length > 4 && i === Math.floor(labels.length / 2));
             if (!showLabel) return null;
@@ -380,8 +488,23 @@ function MiniChart({
           height: ${height}px;
         }
         .axis-label {
-          font-size: 10px;
+          font-size: 11px;
           fill: rgba(255, 255, 255, 0.6);
+          font-family: inherit;
+        }
+        .data-point {
+          cursor: pointer;
+          transition: r 0.15s ease;
+        }
+        .tooltip-label {
+          font-size: 10px;
+          fill: rgba(255, 255, 255, 0.7);
+          font-family: inherit;
+        }
+        .tooltip-value {
+          font-size: 13px;
+          fill: #fff;
+          font-weight: 600;
           font-family: inherit;
         }
       `}</style>
@@ -700,6 +823,8 @@ export default function MunicipalityDetailPage({
     v => v.valueMidEurSqm != null && (expectedZones <= 1 || (v.zonesWithData ?? 0) >= zoneThreshold)
   );
   const priceHistory = completeHistoricalValues.map(v => v.valueMidEurSqm as number);
+  const priceHistoryMin = completeHistoricalValues.map(v => v.valueMinEurSqm ?? v.valueMidEurSqm as number);
+  const priceHistoryMax = completeHistoricalValues.map(v => v.valueMaxEurSqm ?? v.valueMidEurSqm as number);
   const priceHistoryLabels = completeHistoricalValues.map(v => v.periodId);
 
   return (
@@ -767,9 +892,11 @@ export default function MunicipalityDetailPage({
             {priceHistory.length > 1 ? (
               <MiniChart
                 data={priceHistory}
+                minData={priceHistoryMin}
+                maxData={priceHistoryMax}
                 labels={priceHistoryLabels}
                 color="#c4785c"
-                height={120}
+                height={180}
                 showAxes={true}
               />
             ) : (
