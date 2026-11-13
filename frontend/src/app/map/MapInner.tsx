@@ -1107,9 +1107,11 @@ export function MapInner() {
           valueMinEurSqm: data.historicalValues?.[0]?.valueMinEurSqm,
           valueMaxEurSqm: data.historicalValues?.[0]?.valueMaxEurSqm,
           // Historical values for sparkline chart
-          historicalValues: data.historicalValues?.map((v: { periodId: string; valueMidEurSqm: number | null; zonesWithData: number | null }) => ({
+          historicalValues: data.historicalValues?.map((v: { periodId: string; valueMidEurSqm: number | null; valueMinEurSqm?: number | null; valueMaxEurSqm?: number | null; zonesWithData: number | null }) => ({
             periodId: v.periodId,
             valueMidEurSqm: v.valueMidEurSqm,
+            valueMinEurSqm: v.valueMinEurSqm,
+            valueMaxEurSqm: v.valueMaxEurSqm,
             zonesWithData: v.zonesWithData,
           })),
           // Forecasts
@@ -1185,9 +1187,11 @@ export function MapInner() {
           valueMinEurSqm: data.historicalValues?.[0]?.valueMinEurSqm,
           valueMaxEurSqm: data.historicalValues?.[0]?.valueMaxEurSqm,
           // Historical values for sparkline chart
-          historicalValues: data.historicalValues?.map((v: { periodId: string; valueMidEurSqm: number | null; zonesWithData: number | null }) => ({
+          historicalValues: data.historicalValues?.map((v: { periodId: string; valueMidEurSqm: number | null; valueMinEurSqm?: number | null; valueMaxEurSqm?: number | null; zonesWithData: number | null }) => ({
             periodId: v.periodId,
             valueMidEurSqm: v.valueMidEurSqm,
+            valueMinEurSqm: v.valueMinEurSqm,
+            valueMaxEurSqm: v.valueMaxEurSqm,
             zonesWithData: v.zonesWithData,
           })),
           forecastAppreciationPct: data.forecast?.appreciationPct,
@@ -1270,7 +1274,7 @@ export function MapInner() {
       }
 
       layer.bindTooltip(label, {
-        sticky: false,
+        sticky: true,
         permanent: false,
         direction: "auto",
         className: "map-tooltip",
